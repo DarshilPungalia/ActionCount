@@ -1,0 +1,8 @@
+# ActionCount backend dependencies
+fastapi
+uvicorn[standard]
+python-multipart
+rtmlib
+onnxruntime
+opencv-python
+numpy
