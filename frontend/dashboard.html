@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ActionCount — Dashboard</title>
+  <meta name="description" content="View your workout history calendar, monthly muscle group stats, and training insights." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } },
+      },
+    };
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; background: radial-gradient(ellipse at 20% 10%, #0f172a 0%, #0a0e1a 60%, #050810 100%); min-height: 100vh; color: #f1f5f9; }
+
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(20px);} to {opacity:1; transform:translateY(0);} }
+    @keyframes slideInRight { from { opacity:0; transform:translateX(40px);} to {opacity:1; transform:translateX(0);} }
+    .anim-up   { animation: fadeInUp 0.5s ease both; }
+    .anim-right { animation: slideInRight 0.4s ease both; }
+    .d100{animation-delay:.1s}.d200{animation-delay:.2s}.d300{animation-delay:.3s}.d400{animation-delay:.4s}
+
+    .glass { background:rgba(255,255,255,0.04); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.08); border-radius:1rem; }
+
+    /* Calendar */
+    .cal-day {
+      aspect-ratio: 1;
+      border-radius: 0.5rem;
+      border: 1px solid transparent;
+      cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      font-size: 0.8rem; font-weight: 500; transition: all 0.15s;
+      position: relative;
+    }
+    .cal-day:hover         { background: rgba(99,102,241,0.12); border-color: rgba(99,102,241,0.3); }
+    .cal-day.today         { border-color: rgba(99,102,241,0.6); background: rgba(99,102,241,0.08); color: #a5b4fc; }
+    .cal-day.has-workout   { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.25); }
+    .cal-day.has-workout:hover { background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.5); }
+    .cal-day.other-month   { opacity: 0.25; cursor: default; }
+    .cal-day .dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: #10b981; position: absolute; bottom: 4px;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; z-index: 50;
+      background: rgba(5,8,16,0.85); backdrop-filter: blur(8px);
+      display: flex; align-items: center; justify-content: center; padding: 1rem;
+      opacity: 0; pointer-events: none; transition: opacity 0.25s;
+    }
+    .modal-overlay.open { opacity: 1; pointer-events: all; }
+    .modal-box {
+      background: #111827; border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 1.25rem; padding: 2rem; width: 100%; max-width: 480px;
+      max-height: 80vh; overflow-y: auto;
+      animation: fadeInUp 0.3s ease both;
+    }
+
+    /* Stat bar */
+    .stat-bar-track { background: rgba(255,255,255,0.06); border-radius: 999px; height: 8px; overflow: hidden; }
+    .stat-bar-fill  { height: 100%; border-radius: 999px; transition: width 1s cubic-bezier(0.4,0,0.2,1); }
+  </style>
+</head>
+<body>
+
+<!-- ─── Navbar ──────────────────────────────────────────────────────────── -->
+<nav class="sticky top-0 z-40 border-b border-white/[0.06]" style="background:rgba(10,14,26,0.85);backdrop-filter:blur(20px);">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2">
+      <span class="text-2xl">🏋️</span>
+      <span class="font-extrabold text-white">ActionCount</span>
+    </a>
+    <div class="flex items-center gap-1">
+      <a href="/" class="nav-pill">Tracker</a>
+      <a href="/dashboard" class="nav-pill active">Dashboard</a>
+      <a href="/chatbot" class="nav-pill">AI Coach</a>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="usernameTag" class="text-sm text-slate-400"></span>
+      <button onclick="Auth.logout()" class="text-slate-500 hover:text-red-400 text-sm transition-colors">Logout</button>
+    </div>
+  </div>
+</nav>
+
+<style>
+  .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; }
+  .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
+  .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
+</style>
+
+<!-- ─── Main ────────────────────────────────────────────────────────────── -->
+<main class="max-w-6xl mx-auto px-4 py-8">
+
+  <!-- Header -->
+  <div class="mb-8 anim-up">
+    <h1 class="text-3xl font-extrabold text-white mb-1">Your Dashboard</h1>
+    <p class="text-slate-400 text-sm">Track your progress, celebrate consistency</p>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- ── Left: Calendar ───────────────────────────────────────────────── -->
+    <div class="lg:col-span-2 space-y-6">
+
+      <!-- Month Stats Summary -->
+      <div class="grid grid-cols-3 gap-4 anim-up d100">
+        <div class="glass p-4 text-center">
+          <div class="text-2xl font-extrabold text-emerald-400" id="totalWorkoutDays">—</div>
+          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Days Trained</div>
+        </div>
+        <div class="glass p-4 text-center">
+          <div class="text-2xl font-extrabold text-indigo-400" id="totalRepsMonth">—</div>
+          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Total Reps</div>
+        </div>
+        <div class="glass p-4 text-center">
+          <div class="text-2xl font-extrabold text-amber-400" id="topMuscle">—</div>
+          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Top Muscle</div>
+        </div>
+      </div>
+
+      <!-- Calendar card -->
+      <div class="glass p-6 anim-up d200">
+        <div class="flex items-center justify-between mb-5">
+          <button id="prevMonth" onclick="changeMonth(-1)"
+            class="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">‹</button>
+          <h2 class="text-lg font-bold text-white" id="calMonthLabel"></h2>
+          <button id="nextMonth" onclick="changeMonth(1)"
+            class="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">›</button>
+        </div>
+
+        <!-- Day headers -->
+        <div class="grid grid-cols-7 gap-1 mb-2">
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Sun</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Mon</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Tue</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Wed</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Thu</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Fri</div>
+          <div class="text-xs text-slate-500 text-center font-medium py-1">Sat</div>
+        </div>
+
+        <!-- Calendar grid -->
+        <div class="grid grid-cols-7 gap-1" id="calGrid"></div>
+      </div>
+
+    </div>
+
+    <!-- ── Right: Muscle Stats ───────────────────────────────────────────── -->
+    <div class="space-y-6">
+
+      <!-- Muscle bar chart -->
+      <div class="glass p-6 anim-right d200">
+        <h3 class="text-base font-bold text-white mb-4">This Month's Training</h3>
+        <div id="muscleStats" class="space-y-3"></div>
+      </div>
+
+      <!-- Chart.js doughnut -->
+      <div class="glass p-6 anim-right d300">
+        <h3 class="text-base font-bold text-white mb-4">Muscle Distribution</h3>
+        <div class="relative" style="height:180px;">
+          <canvas id="muscleChart"></canvas>
+        </div>
+        <p id="noChartData" class="text-slate-500 text-sm text-center mt-3 hidden">No workout data yet this month</p>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<!-- ─── Workout Detail Modal ─────────────────────────────────────────────── -->
+<div id="workoutModal" class="modal-overlay" onclick="closeModal(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="flex items-center justify-between mb-5">
+      <div>
+        <h3 class="text-lg font-bold text-white" id="modalDate"></h3>
+        <p class="text-slate-400 text-sm" id="modalSubtitle"></p>
+      </div>
+      <button onclick="closeModal()" class="text-slate-500 hover:text-white transition-colors text-xl">✕</button>
+    </div>
+    <div id="modalExercises" class="space-y-3 max-h-96 overflow-y-auto pr-1"></div>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

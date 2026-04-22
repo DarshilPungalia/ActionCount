@@ -1,22 +1,35 @@
 """
 endpoint.py
 -----------
-FastAPI entry point for the ActionCount rep-counter backend.
+Single FastAPI entry point for the ActionCount backend.
 
-Endpoints
----------
-GET  /                          → serve frontend/index.html
+Existing endpoints (preserved)
+-------------------------------
+GET  /                          → serve frontend/index.html (tracker)
 GET  /exercises                 → list available exercise slugs
 POST /session/start             → create a session, return session_id
-GET  /session/{sid}/state       → poll current counter state (for upload HUD)
+GET  /session/{sid}/state       → poll current counter state
 POST /session/{sid}/reset       → reset rep count
-POST /upload/process            → upload a video file, get back MJPEG stream
+POST /upload/process            → upload video, returns MJPEG stream
 WS   /ws/stream/{session_id}    → live camera WebSocket
 
-WebSocket binary protocol
---------------------------
-Client → Server : raw JPEG bytes (one frame per message)
-Server → Client : JSON  { counter, feedback, progress, correct_form, keypoints, skipped }
+New endpoints (auth, profile, workouts, chat)
+---------------------------------------------
+POST /api/auth/signup           → create account
+POST /api/auth/login            → get JWT token
+GET  /api/user/profile          → get onboarding profile (auth required)
+POST /api/user/profile          → save onboarding profile (auth required)
+POST /api/workout/save          → save a completed set (auth required)
+GET  /api/workout/history       → full workout history for calendar (auth required)
+GET  /api/workout/stats         → monthly muscle group aggregation (auth required)
+POST /api/chat                  → send message to Gemini AI chatbot (auth required)
+DELETE /api/chat                → clear chat history (auth required)
+
+Frontend pages served statically
+---------------------------------
+GET  /login                     → frontend/login.html
+GET  /dashboard                 → frontend/dashboard.html
+GET  /chatbot                   → frontend/chatbot.html
 """
 
 from __future__ import annotations
@@ -27,23 +40,34 @@ import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import (
-    FastAPI, File, Form, HTTPException,
-    UploadFile, WebSocket, WebSocketDisconnect,
+    Depends, FastAPI, File, Form, HTTPException,
+    UploadFile, WebSocket, WebSocketDisconnect, status,
 )
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.security import OAuth2PasswordBearer
 from fastapi.staticfiles import StaticFiles
+from jose import JWTError, jwt
+from passlib.context import CryptContext
 from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Path setup — make backend/ importable as a package
-# ---------------------------------------------------------------------------
+# ── Environment ───────────────────────────────────────────────────────────────
+load_dotenv()
+SECRET_KEY                = os.getenv("SECRET_KEY", "fallback-secret-change-me")
+ALGORITHM                 = os.getenv("ALGORITHM", "HS256")
+ACCESS_TOKEN_EXPIRE_MINS  = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
+GOOGLE_API_KEY            = os.getenv("GOOGLE_API_KEY", "")
+
+# ── Path setup ────────────────────────────────────────────────────────────────
 BACKEND_DIR  = Path(__file__).parent.resolve()
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 ROOT_DIR     = BACKEND_DIR.parent
@@ -53,70 +77,330 @@ for p in (str(BACKEND_DIR), str(ROOT_DIR)):
         sys.path.insert(0, p)
 
 from backend.session_manager import SessionManager  # noqa: E402
+from backend import db                              # noqa: E402
+from backend.models import (                        # noqa: E402
+    SignupRequest, LoginRequest, TokenResponse,
+    UserProfile, UserProfileResponse,
+    SaveWorkoutRequest, WorkoutHistoryResponse, WorkoutStatsResponse,
+    DayWorkout, WorkoutEntry, MuscleGroupStat,
+    ChatRequest, ChatResponse, ChatMessage,
+)
 
-# ---------------------------------------------------------------------------
-# App init
-# ---------------------------------------------------------------------------
+# ── Security helpers ──────────────────────────────────────────────────────────
+pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+
+
+def _hash_password(plain: str) -> str:
+    return pwd_context.hash(plain)
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return pwd_context.verify(plain, hashed)
+
+
+def _create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINS))
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def _get_current_user(token: str = Depends(oauth2_scheme)) -> str:
+    """Dependency — decode JWT and return username, or raise 401."""
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
+
+    user = db.get_user(username)
+    if user is None:
+        raise credentials_exception
+    return username
+
+
+# ── AI Chatbot helper ─────────────────────────────────────────────────────────
+
+def _get_ai_response(username: str, user_message: str) -> str:
+    """
+    Call Gemini via LangChain with user profile as system context.
+    Falls back to a placeholder message if GOOGLE_API_KEY is not set.
+    """
+    if not GOOGLE_API_KEY:
+        return (
+            "⚠️ The AI chatbot is not configured. "
+            "Please set GOOGLE_API_KEY in your .env file."
+        )
+
+    try:
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+
+        profile = db.get_user_profile(username) or {}
+        history = db.load_chat_history(username)
+
+        # Build system prompt from user profile
+        target_map = {
+            "weight_loss":      "Weight Loss",
+            "muscle_gain":      "Muscle Gain",
+            "endurance":        "Building Endurance",
+            "general_fitness":  "General Fitness",
+        }
+        restrictions = ", ".join(profile.get("dietary_restrictions", [])) or "None"
+        system_prompt = (
+            "You are a personalized fitness and nutrition AI assistant called ActionBot. "
+            "Provide evidence-based dietary and fitness advice tailored to the user's profile.\n\n"
+            f"User Profile:\n"
+            f"  - Age: {profile.get('age', 'Unknown')}\n"
+            f"  - Gender: {profile.get('gender', 'Unknown')}\n"
+            f"  - Weight: {profile.get('weight_kg', '?')} kg\n"
+            f"  - Height: {profile.get('height_cm', '?')} cm\n"
+            f"  - Goal: {target_map.get(profile.get('target', ''), 'General Fitness')}\n"
+            f"  - Dietary Restrictions: {restrictions}\n\n"
+            "Always respect dietary restrictions strictly. Be concise, friendly, and practical. "
+            "When suggesting meal plans, always provide specific quantities and macros."
+        )
+
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=GOOGLE_API_KEY,
+            temperature=0.7,
+        )
+
+        messages = [SystemMessage(content=system_prompt)]
+        for msg in history[-20:]:  # Last 20 messages for context
+            if msg["role"] == "user":
+                messages.append(HumanMessage(content=msg["content"]))
+            else:
+                messages.append(AIMessage(content=msg["content"]))
+        messages.append(HumanMessage(content=user_message))
+
+        response = llm.invoke(messages)
+        return response.content
+
+    except Exception as e:
+        return f"⚠️ AI error: {str(e)}. Please check your GOOGLE_API_KEY."
+
+
+# ── App init ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Warm up the session manager on startup."""
-    mgr = SessionManager.instance()
-    print("[ActionCount] SessionManager ready.")
+    SessionManager.instance()
+    print("[ActionCount] Backend ready.")
     yield
-    print("[ActionCount] Shutdown complete.")
+    print("[ActionCount] Shutdown.")
 
-app = FastAPI(title="ActionCount", version="2.0.0", lifespan=lifespan)
 
-# Serve frontend static files at /static
+app = FastAPI(title="ActionCount", version="3.0.0", lifespan=lifespan)
+
+# CORS — allow the frontend to talk to the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Static files
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
+# ── Constants ─────────────────────────────────────────────────────────────────
 TARGET_FPS   = 30
-MIN_FRAME_MS = 1000 / TARGET_FPS   # ≈ 33.3 ms
+MIN_FRAME_MS = 1000 / TARGET_FPS
 
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FRONTEND PAGE ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_tracker():
+    """Serve the live tracker (index.html)."""
+    p = FRONTEND_DIR / "index.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def serve_login():
+    p = FRONTEND_DIR / "login.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def serve_dashboard():
+    p = FRONTEND_DIR / "dashboard.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/chatbot", response_class=HTMLResponse)
+async def serve_chatbot():
+    p = FRONTEND_DIR / "chatbot.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — AUTHENTICATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/auth/signup", response_model=TokenResponse)
+async def signup(body: SignupRequest):
+    """Create a new user account. Returns a JWT token immediately."""
+    if db.get_user(body.username):
+        raise HTTPException(status_code=409, detail="Username already exists.")
+
+    hashed = _hash_password(body.password)
+    db.create_user(body.username, hashed, body.email)
+
+    token = _create_access_token({"sub": body.username})
+    return TokenResponse(access_token=token, token_type="bearer", is_new_user=True)
+
+
+@app.post("/api/auth/login", response_model=TokenResponse)
+async def login(body: LoginRequest):
+    """Authenticate and return a JWT token."""
+    user = db.get_user(body.username)
+    if not user or not _verify_password(body.password, user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password.",
+        )
+    token = _create_access_token({"sub": body.username})
+    is_new = not user.get("onboarding_complete", False)
+    return TokenResponse(access_token=token, token_type="bearer", is_new_user=is_new)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — USER PROFILE (ONBOARDING)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/user/profile", response_model=UserProfileResponse)
+async def get_profile(username: str = Depends(_get_current_user)):
+    profile = db.get_user_profile(username)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not set. Complete onboarding.")
+    return UserProfileResponse(username=username, onboarding_complete=True, **profile)
+
+
+@app.post("/api/user/profile", response_model=UserProfileResponse)
+async def save_profile(body: UserProfile, username: str = Depends(_get_current_user)):
+    db.update_user_profile(username, body.model_dump())
+    return UserProfileResponse(username=username, onboarding_complete=True, **body.model_dump())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — WORKOUTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/workout/save")
+async def save_workout(body: SaveWorkoutRequest, username: str = Depends(_get_current_user)):
+    """Save a completed set for today (or the supplied date)."""
+    day_data = db.save_workout(
+        username, body.exercise, body.reps, body.sets, body.date
+    )
+    return {"status": "saved", "day": day_data}
+
+
+@app.get("/api/workout/history", response_model=WorkoutHistoryResponse)
+async def get_history(username: str = Depends(_get_current_user)):
+    """Return the full workout history — used to populate the calendar."""
+    raw = db.get_workout_history(username)
+    history = [
+        DayWorkout(
+            date=day,
+            exercises={
+                ex: WorkoutEntry(reps=data["reps"], sets=data["sets"])
+                for ex, data in exercises.items()
+            },
+        )
+        for day, exercises in sorted(raw.items())
+    ]
+    return WorkoutHistoryResponse(history=history)
+
+
+@app.get("/api/workout/stats", response_model=WorkoutStatsResponse)
+async def get_stats(
+    month: Optional[str] = None,
+    username: str = Depends(_get_current_user),
+):
+    """Return muscle-group reps aggregation for the given YYYY-MM month."""
+    year_month  = month or datetime.now().strftime("%Y-%m")
+    muscle_data = db.get_monthly_stats(username, year_month)
+    stats = [
+        MuscleGroupStat(muscle_group=g, total_reps=r)
+        for g, r in muscle_data.items()
+    ]
+    return WorkoutStatsResponse(month=year_month, stats=stats)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — AI CHATBOT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(body: ChatRequest, username: str = Depends(_get_current_user)):
+    """Send a message to the Gemini-powered dietary chatbot."""
+    # Save user message
+    db.append_chat_message(username, "user", body.message)
+
+    # Get AI response (runs in thread to avoid blocking the event loop)
+    reply = await asyncio.to_thread(_get_ai_response, username, body.message)
+
+    # Save assistant reply
+    db.append_chat_message(username, "assistant", reply)
+
+    history = [ChatMessage(**m) for m in db.load_chat_history(username)]
+    return ChatResponse(reply=reply, history=history)
+
+
+@app.delete("/api/chat")
+async def clear_chat(username: str = Depends(_get_current_user)):
+    """Clear the user's chat history."""
+    db.clear_chat_history(username)
+    return {"status": "cleared"}
+
+
+@app.get("/api/chat/history")
+async def get_chat_history(username: str = Depends(_get_current_user)):
+    """Load existing chat history on page load."""
+    history = db.load_chat_history(username)
+    return {"history": history}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ORIGINAL ENDPOINTS (Preserved)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/exercises")
+async def list_exercises():
+    mgr = SessionManager.instance()
+    return {"exercises": mgr.list_exercises()}
+
+
 class StartSessionRequest(BaseModel):
-    exercise: str   # e.g. "squat"
+    exercise: str
+
 
 class StartSessionResponse(BaseModel):
     session_id: str
     exercise:   str
 
-# ---------------------------------------------------------------------------
-# Routes — static / meta
-# ---------------------------------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the frontend index.html."""
-    html_path = FRONTEND_DIR / "index.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Frontend not found. Place files in frontend/</h1>", status_code=404)
-
-
-@app.get("/exercises")
-async def list_exercises():
-    """Return the list of supported exercise slugs."""
-    mgr = SessionManager.instance()
-    return {"exercises": mgr.list_exercises()}
-
-# ---------------------------------------------------------------------------
-# Session management
-# ---------------------------------------------------------------------------
 
 @app.post("/session/start", response_model=StartSessionResponse)
 async def start_session(body: StartSessionRequest):
-    """Create a new rep-counter session."""
     mgr = SessionManager.instance()
     try:
-        sid = mgr.create(body.exercise)   # BaseCounter owns its own PoseDetectorModified
+        sid = mgr.create(body.exercise)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return StartSessionResponse(session_id=sid, exercise=body.exercise)
@@ -124,7 +408,6 @@ async def start_session(body: StartSessionRequest):
 
 @app.get("/session/{session_id}/state")
 async def get_session_state(session_id: str):
-    """Return the current counter state for a session (used for HUD polling)."""
     mgr = SessionManager.instance()
     try:
         session = mgr.get(session_id)
@@ -135,7 +418,6 @@ async def get_session_state(session_id: str):
 
 @app.post("/session/{session_id}/reset")
 async def reset_session(session_id: str):
-    """Reset the rep count for an existing session."""
     mgr = SessionManager.instance()
     try:
         mgr.reset(session_id)
@@ -143,22 +425,13 @@ async def reset_session(session_id: str):
         raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
     return {"status": "reset", "session_id": session_id}
 
-# ---------------------------------------------------------------------------
-# Video upload endpoint
-# ---------------------------------------------------------------------------
 
 @app.post("/upload/process")
 async def upload_process(
     file: UploadFile = File(...),
     exercise: str    = Form(...),
 ):
-    """
-    Accept an uploaded video file.
-    Process it with the chosen exercise counter.
-    Stream back an MJPEG response (displayable in <img src=…> or via fetch).
-    """
-    mgr = SessionManager.instance()
-
+    mgr    = SessionManager.instance()
     suffix = Path(file.filename).suffix or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(await file.read())
@@ -171,26 +444,21 @@ async def upload_process(
         raise HTTPException(status_code=400, detail=str(e))
 
     async def _generate_mjpeg():
-        session = mgr.get(sid)
-        cap     = cv2.VideoCapture(tmp_path)
-
-        src_fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        session  = mgr.get(sid)
+        cap      = cv2.VideoCapture(tmp_path)
+        src_fps  = cap.get(cv2.CAP_PROP_FPS) or 30.0
         frame_sec = 1.0 / src_fps
 
         try:
             while cap.isOpened():
                 t0 = asyncio.get_event_loop().time()
-
                 ret, frame = await asyncio.to_thread(cap.read)
                 if not ret:
                     break
 
-                # process_frame handles pose detection + overlay drawing
-                result = session.counter.process_frame(frame)
-
+                result   = session.counter.process_frame(frame)
                 annotated = result["frame"]
-
-                ok, buf = await asyncio.to_thread(
+                ok, buf  = await asyncio.to_thread(
                     cv2.imencode, ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85]
                 )
                 if not ok:
@@ -220,31 +488,28 @@ async def upload_process(
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
 
-# ---------------------------------------------------------------------------
-# WebSocket — live camera feed
-# ---------------------------------------------------------------------------
 
 @app.websocket("/ws/stream/{session_id}")
 async def ws_stream(websocket: WebSocket, session_id: str):
     """
-    Binary WebSocket endpoint for live camera rep counting.
+    Refactored WebSocket handler (video_pipeline_implementation_plan.md §2b).
 
-    Frame flow
-    ----------
-    1. Client sends a binary message: raw JPEG bytes at processing resolution.
-    2. Server decodes → runs process_frame (pose + counter) → returns JSON.
-    3. Client renders the stats panel and draws its own skeleton overlay
-       using the returned keypoints array.
-
-    JSON response keys
+    Anti-pattern fixed
     ------------------
-    counter      : int   — total rep count this session
-    feedback     : str   — "Up" | "Down" | "Fix Form" | "Get in Position"
-    progress     : float — 0–100 exercise progress percentage
-    correct_form : bool  — True once valid starting form is detected
-    keypoints    : list  — [[x, y], …] for 17 COCO keypoints (processing res)
-                           or null if no person detected
-    skipped      : bool  — True when frame was dropped for FPS throttling
+    Before: frame received → process_frame() blocked here → JSON sent
+            (RTMPose inference, ~50–200ms, stalled the async loop)
+
+    After : frame received → write to AtomicFrame (non-blocking overwrite)
+                           → read latest result from AtomicResult
+                           → JSON sent immediately
+            InferenceWorker thread runs RTMPose at up to 15 fps independently.
+
+    Latency impact
+    --------------
+    WebSocket receive/send loop is no longer gated by model inference time.
+    The client receives a response for every frame it sends, using the most
+    recent inference result available (renders last known result if inference
+    is still in progress — satisfies plan render-thread requirement).
     """
     mgr = SessionManager.instance()
     try:
@@ -253,71 +518,55 @@ async def ws_stream(websocket: WebSocket, session_id: str):
         await websocket.close(code=4004)
         return
 
+    # Default payload returned before inference produces its first result
+    _default_payload = {
+        "counter": 0, "feedback": "Get in Position",
+        "progress": 0.0, "correct_form": False,
+        "keypoints": None, "skipped": False,
+    }
+
     await websocket.accept()
     try:
         while True:
             data = await websocket.receive_bytes()
 
-            now_ms  = time.time() * 1000
-            elapsed = now_ms - (session.last_process_time * 1000 if session.last_process_time else 0)
+            # ── Decode JPEG (record capture latency) ──────────────────────────
+            cap_t0 = time.monotonic()
+            frame  = _decode_jpeg(data)
+            session.metrics.record_capture(time.monotonic() - cap_t0)
 
-            # FPS cap — return cached result if running too fast
-            if session.last_process_time and elapsed < MIN_FRAME_MS:
-                await websocket.send_json({**session.last_result, "skipped": True})
-                continue
-
-            session.last_process_time = time.time()
-
-            # Decode JPEG → BGR numpy array
-            frame = _decode_jpeg(data)
             if frame is None:
                 await websocket.send_json({"error": "invalid frame"})
                 continue
 
-            # Full inference via process_frame (pose + counter + overlays)
-            result = session.counter.process_frame(frame)
+            # ── Hand frame to inference thread (non-blocking overwrite) ───────
+            session.atomic_frame.write(frame)
 
-            # Extract keypoints from the internal detector for client-side overlay
-            kps_list = None
-            kps_raw  = session.counter.pose_detector._keypoints
-            if kps_raw is not None:
-                kps_list = _kps_to_list(kps_raw)
+            # ── Return latest known result immediately (never blocks) ─────────
+            result = session.atomic_result.read()
+            payload = result if result is not None else _default_payload
 
-            payload = {
-                "counter":      result["counter"],
-                "feedback":     result["feedback"],
-                "progress":     round(result["progress"], 1),
-                "correct_form": result["correct_form"],
-                "keypoints":    kps_list,
-                "skipped":      False,
-            }
-            session.last_result = payload
-            await websocket.send_json(payload)
+            await websocket.send_json({**payload, "skipped": False})
 
     except WebSocketDisconnect:
         pass
     finally:
         mgr.destroy(session_id)
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _decode_jpeg(data: bytes) -> Optional[np.ndarray]:
-    """Decode a JPEG byte buffer to a BGR numpy array."""
     arr = np.frombuffer(data, dtype=np.uint8)
     if arr.size == 0:
         return None
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)   # may be None if decode fails
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
 def _kps_to_list(kps: np.ndarray) -> list:
-    """Convert (17, 2) numpy array to JSON-serialisable list of [x, y] pairs."""
     return [[round(float(x), 2), round(float(y), 2)] for x, y in kps]
 
 
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
+# ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("endpoint:app", host="0.0.0.0", port=8000, reload=True)

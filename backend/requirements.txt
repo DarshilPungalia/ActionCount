@@ -1,8 +1,31 @@
 # ActionCount backend dependencies
+
+# Core server
 fastapi
 uvicorn[standard]
 python-multipart
+
+# Pose estimation
 rtmlib
 onnxruntime
 opencv-python
 numpy
+
+# Auth
+python-jose[cryptography]
+passlib[bcrypt]
+python-dotenv
+
+# Streamlit UI
+streamlit
+streamlit-webrtc
+av
+streamlit-calendar
+
+# AI Chatbot
+langchain
+langchain-google-genai
+google-generativeai
+
+# Charts (Streamlit dashboard)
+plotly

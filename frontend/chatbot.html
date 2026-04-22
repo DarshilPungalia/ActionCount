@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ActionCount — AI Diet Coach</title>
+  <meta name="description" content="Chat with your personalized AI fitness and dietary coach powered by Gemini." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { fontFamily: { sans: ['Inter', 'sans-serif'] } } },
+    };
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: radial-gradient(ellipse at 20% 10%, #0f172a 0%, #0a0e1a 60%, #050810 100%); min-height: 100vh; color: #f1f5f9; display: flex; flex-direction: column; }
+
+    @keyframes fadeInUp { from { opacity:0; transform:translateY(16px);} to {opacity:1; transform:translateY(0);} }
+    @keyframes pulseDot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(1.3)} }
+
+    .anim-up { animation: fadeInUp 0.35s ease both; }
+
+    /* Bubble styles */
+    .bubble-user {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: #fff;
+      border-radius: 1.25rem 1.25rem 0.25rem 1.25rem;
+      padding: 0.75rem 1rem;
+      max-width: 75%;
+      font-size: 0.88rem;
+      line-height: 1.6;
+      word-break: break-word;
+      box-shadow: 0 4px 20px rgba(99,102,241,0.25);
+    }
+    .bubble-ai {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #e2e8f0;
+      border-radius: 1.25rem 1.25rem 1.25rem 0.25rem;
+      padding: 0.75rem 1rem;
+      max-width: 80%;
+      font-size: 0.88rem;
+      line-height: 1.7;
+      word-break: break-word;
+    }
+    .bubble-ai strong { color: #a5b4fc; }
+    .bubble-ai ul     { padding-left: 1.2em; margin: 0.4em 0; }
+    .bubble-ai li     { margin-bottom: 0.2em; }
+
+    /* Typing indicator dots */
+    .typing-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #6366f1;
+      animation: pulseDot 1.2s ease-in-out infinite;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+    /* Input area */
+    #chatInput {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: #f1f5f9;
+      border-radius: 0.875rem;
+      padding: 0.75rem 1rem;
+      font-size: 0.9rem;
+      outline: none;
+      resize: none;
+      flex: 1;
+      max-height: 120px;
+      font-family: 'Inter', sans-serif;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    #chatInput::placeholder { color: #475569; }
+    #chatInput:focus {
+      border-color: rgba(99,102,241,0.55);
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.12);
+    }
+
+    .send-btn {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: #fff; border: none; cursor: pointer;
+      border-radius: 0.875rem; padding: 0.75rem 1.1rem;
+      font-size: 1.1rem; transition: all 0.2s; flex-shrink: 0;
+    }
+    .send-btn:hover { background: linear-gradient(135deg, #818cf8, #6366f1); transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99,102,241,0.35); }
+    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+  </style>
+</head>
+<body>
+
+<!-- ─── Navbar ──────────────────────────────────────────────────────────── -->
+<nav class="sticky top-0 z-40 border-b border-white/[0.06]" style="background:rgba(10,14,26,0.85);backdrop-filter:blur(20px);">
+  <div class="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2">
+      <span class="text-2xl">🏋️</span>
+      <span class="font-extrabold text-white">ActionCount</span>
+    </a>
+    <div class="flex items-center gap-1">
+      <a href="/" class="nav-pill">Tracker</a>
+      <a href="/dashboard" class="nav-pill">Dashboard</a>
+      <a href="/chatbot" class="nav-pill active">AI Coach</a>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="usernameTag" class="text-sm text-slate-400"></span>
+      <button onclick="Auth.logout()" class="text-slate-500 hover:text-red-400 text-sm transition-colors">Logout</button>
+    </div>
+  </div>
+</nav>
+<style>
+  .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; }
+  .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
+  .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
+</style>
+
+<!-- ─── Chat Layout ──────────────────────────────────────────────────────── -->
+<div class="flex-1 flex flex-col max-w-3xl w-full mx-auto px-4 pb-4" style="height:calc(100vh - 56px);">
+
+  <!-- Chat header -->
+  <div class="py-4 flex items-center justify-between border-b border-white/[0.06]">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-full flex items-center justify-center text-lg" style="background:linear-gradient(135deg,#6366f1,#10b981);">🤖</div>
+      <div>
+        <div class="font-semibold text-white text-sm">ActionBot</div>
+        <div class="flex items-center gap-1.5 text-xs text-emerald-400">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+          Powered by Gemini
+        </div>
+      </div>
+    </div>
+    <button onclick="clearHistory()"
+      title="Clear chat"
+      class="text-slate-500 hover:text-red-400 transition-colors text-sm px-3 py-1.5 rounded-lg hover:bg-red-400/10">
+      🗑 Clear
+    </button>
+  </div>
+
+  <!-- Message list -->
+  <div id="chatMessages" class="flex-1 overflow-y-auto py-4 space-y-4 pr-1">
+    <!-- Welcome message -->
+    <div class="flex gap-3 items-end anim-up">
+      <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0" style="background:linear-gradient(135deg,#6366f1,#10b981);">🤖</div>
+      <div class="bubble-ai">
+        👋 Hi! I'm <strong>ActionBot</strong>, your personalized fitness and nutrition coach.<br><br>
+        I know your goals, dietary restrictions, and training history. Ask me anything:
+        <ul>
+          <li>🥗 Meal plans tailored to your goals</li>
+          <li>💊 Supplement recommendations</li>
+          <li>🏋️ Exercise advice & recovery tips</li>
+          <li>📊 Progress analysis</li>
+        </ul>
+        What would you like to know?
+      </div>
+    </div>
+  </div>
+
+  <!-- Typing indicator (hidden by default) -->
+  <div id="typingIndicator" class="flex gap-3 items-end mb-2 hidden">
+    <div class="w-8 h-8 rounded-full flex items-center justify-center text-sm flex-shrink-0" style="background:linear-gradient(135deg,#6366f1,#10b981);">🤖</div>
+    <div class="bubble-ai flex items-center gap-1.5 py-3 px-4">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>
+  </div>
+
+  <!-- Suggested prompts -->
+  <div id="suggestedPrompts" class="flex flex-wrap gap-2 mb-3">
+    <button class="prompt-chip" onclick="sendPrompt('Give me a high-protein meal plan for today')">🥩 High-protein meal plan</button>
+    <button class="prompt-chip" onclick="sendPrompt('What should I eat before and after a workout?')">⚡ Pre/post workout nutrition</button>
+    <button class="prompt-chip" onclick="sendPrompt('How many calories should I eat daily for my goal?')">🔥 Calorie target</button>
+    <button class="prompt-chip" onclick="sendPrompt('Suggest a recovery meal after leg day')">🦵 Post leg day meal</button>
+  </div>
+  <style>
+    .prompt-chip {
+      font-size: 0.75rem; padding: 0.35rem 0.75rem; border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.04);
+      color: #94a3b8; cursor: pointer; transition: all 0.15s;
+    }
+    .prompt-chip:hover { border-color: rgba(99,102,241,0.4); color: #a5b4fc; background: rgba(99,102,241,0.08); }
+  </style>
+
+  <!-- Input area -->
+  <div class="flex gap-2 items-end">
+    <textarea id="chatInput" rows="1"
+      placeholder="Ask about meal plans, nutrition, recovery…"
+      onkeydown="handleKey(event)"
+      oninput="autoResize(this)"></textarea>
+    <button class="send-btn" id="sendBtn" onclick="sendMessage()">➤</button>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+<script src="/static/js/chat.js"></script>
+</body>
+</html>

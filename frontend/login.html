@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ActionCount — Sign In</title>
+  <meta name="description" content="Sign in or create your ActionCount account to track workouts, view history, and get AI dietary plans." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/main.css" />
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            brand:   { DEFAULT: '#6366f1', light: '#818cf8', dark: '#4f46e5' },
+            success: { DEFAULT: '#10b981', dark: '#059669' },
+          },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+
+    /* Animated background blobs */
+    .blob {
+      position: fixed; border-radius: 50%;
+      filter: blur(80px); opacity: 0.12; pointer-events: none; z-index: 0;
+    }
+
+    /* Card flip animation */
+    .flip-container { perspective: 1200px; }
+    .flip-inner {
+      transition: transform 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+      transform-style: preserve-3d;
+      position: relative;
+    }
+    .flip-inner.flipped { transform: rotateY(180deg); }
+    .flip-front, .flip-back {
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+    }
+    .flip-back { transform: rotateY(180deg); }
+
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(24px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in-up { animation: fadeInUp 0.55s ease both; }
+
+    @keyframes gradientShift {
+      0%,100% { background-position: 0% 50%; }
+      50%      { background-position: 100% 50%; }
+    }
+    .bg-animated {
+      background: linear-gradient(270deg, #0f172a, #1e1b4b, #0a2416, #0f172a);
+      background-size: 400% 400%;
+      animation: gradientShift 12s ease infinite;
+    }
+
+    .input-field {
+      width: 100%;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.10);
+      color: #f1f5f9;
+      border-radius: 0.75rem;
+      padding: 0.75rem 1rem;
+      font-size: 0.875rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .input-field::placeholder { color: #475569; }
+    .input-field:focus {
+      border-color: rgba(99,102,241,0.6);
+      box-shadow: 0 0 0 3px rgba(99,102,241,0.15);
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #6366f1, #4f46e5);
+      color: #fff; font-weight: 600; width: 100%;
+      padding: 0.75rem; border-radius: 0.75rem;
+      border: none; cursor: pointer;
+      transition: all 0.2s; font-size: 0.95rem;
+    }
+    .btn-primary:hover {
+      background: linear-gradient(135deg, #818cf8, #6366f1);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 30px rgba(99,102,241,0.4);
+    }
+    .btn-primary:active { transform: none; }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    .glass-card {
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(24px);
+      -webkit-backdrop-filter: blur(24px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 1.5rem;
+    }
+
+    .tag-btn {
+      padding: 0.3rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      font-size: 0.78rem;
+      cursor: pointer;
+      background: rgba(255,255,255,0.04);
+      color: #94a3b8;
+      transition: all 0.2s;
+    }
+    .tag-btn.active {
+      background: rgba(99,102,241,0.2);
+      border-color: rgba(99,102,241,0.5);
+      color: #a5b4fc;
+    }
+  </style>
+</head>
+<body class="bg-animated min-h-screen flex items-center justify-center p-4">
+
+  <!-- Background blobs -->
+  <div class="blob w-96 h-96 bg-indigo-600 top-[-10%] left-[-10%]"></div>
+  <div class="blob w-80 h-80 bg-emerald-500 bottom-[-8%] right-[-8%]"></div>
+
+  <div class="relative z-10 w-full max-w-md">
+
+    <!-- Logo -->
+    <div class="text-center mb-8 animate-fade-in-up">
+      <div class="inline-flex items-center gap-2 mb-3">
+        <span class="text-4xl">🏋️</span>
+        <h1 class="text-3xl font-extrabold" style="background:linear-gradient(135deg,#6366f1,#10b981);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+          ActionCount
+        </h1>
+      </div>
+      <p class="text-slate-400 text-sm">Your AI-powered fitness companion</p>
+    </div>
+
+    <!-- Card (flips between login & signup) -->
+    <div class="flip-container animate-fade-in-up" style="animation-delay:0.1s">
+      <div class="flip-inner" id="flipInner">
+
+        <!-- ─── FRONT: Login ───────────────────────────────────────────── -->
+        <div class="flip-front glass-card p-8">
+          <h2 class="text-xl font-bold text-white mb-1">Welcome back</h2>
+          <p class="text-slate-400 text-sm mb-6">Sign in to your account</p>
+
+          <form id="loginForm" class="space-y-4" novalidate>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
+              <input id="loginUser" type="text" class="input-field" placeholder="your_username" autocomplete="username" required />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+              <div class="relative">
+                <input id="loginPass" type="password" class="input-field pr-10" placeholder="••••••••" autocomplete="current-password" required />
+                <button type="button" onclick="togglePass('loginPass',this)"
+                  class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">
+                  👁
+                </button>
+              </div>
+            </div>
+
+            <p id="loginError" class="text-red-400 text-xs hidden"></p>
+
+            <button type="submit" class="btn-primary" id="loginBtn">Sign In</button>
+          </form>
+
+          <p class="text-center text-slate-500 text-sm mt-6">
+            New here?
+            <button onclick="flipCard()" class="text-indigo-400 hover:text-indigo-300 font-medium">Create account →</button>
+          </p>
+        </div>
+
+        <!-- ─── BACK: Signup ──────────────────────────────────────────── -->
+        <div class="flip-back glass-card p-8 absolute inset-0">
+          <h2 class="text-xl font-bold text-white mb-1">Create account</h2>
+          <p class="text-slate-400 text-sm mb-6">Start your fitness journey</p>
+
+          <form id="signupForm" class="space-y-4" novalidate>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
+              <input id="signupUser" type="text" class="input-field" placeholder="choose_a_username" autocomplete="username" required />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Email (optional)</label>
+              <input id="signupEmail" type="email" class="input-field" placeholder="you@example.com" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+              <div class="relative">
+                <input id="signupPass" type="password" class="input-field pr-10" placeholder="Min. 6 characters" autocomplete="new-password" required />
+                <button type="button" onclick="togglePass('signupPass',this)"
+                  class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">
+                  👁
+                </button>
+              </div>
+            </div>
+
+            <p id="signupError" class="text-red-400 text-xs hidden"></p>
+
+            <button type="submit" class="btn-primary" id="signupBtn">Create Account</button>
+          </form>
+
+          <p class="text-center text-slate-500 text-sm mt-6">
+            Already have an account?
+            <button onclick="flipCard()" class="text-indigo-400 hover:text-indigo-300 font-medium">← Sign In</button>
+          </p>
+        </div>
+
+      </div><!-- /flip-inner -->
+    </div><!-- /flip-container -->
+
+  </div><!-- /max-w-md -->
+
+  <!-- ─── Onboarding Modal ──────────────────────────────────────────────── -->
+  <div id="onboardingOverlay"
+    class="fixed inset-0 z-50 flex items-center justify-center p-4 hidden"
+    style="background:rgba(5,8,16,0.85);backdrop-filter:blur(8px);">
+
+    <div class="glass-card p-8 w-full max-w-lg relative" style="animation:fadeInUp 0.4s ease both;">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-3xl">🎯</span>
+        <div>
+          <h3 class="text-xl font-bold text-white">Tell us about yourself</h3>
+          <p class="text-slate-400 text-sm">This helps us personalize your AI coach</p>
+        </div>
+      </div>
+
+      <!-- Step indicator -->
+      <div class="flex gap-2 my-5">
+        <div id="step1Dot" class="h-1.5 flex-1 rounded-full bg-indigo-500 transition-all"></div>
+        <div id="step2Dot" class="h-1.5 flex-1 rounded-full bg-white/10 transition-all"></div>
+      </div>
+
+      <form id="onboardingForm" class="space-y-4" novalidate>
+
+        <!-- Step 1 -->
+        <div id="obStep1" class="space-y-4">
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Weight (kg)</label>
+              <input id="obWeight" type="number" class="input-field" placeholder="70" min="1" max="500" required />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Height (cm)</label>
+              <input id="obHeight" type="number" class="input-field" placeholder="175" min="1" max="300" required />
+            </div>
+          </div>
+          <div class="grid grid-cols-2 gap-4">
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Age</label>
+              <input id="obAge" type="number" class="input-field" placeholder="25" min="1" max="150" required />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Gender</label>
+              <select id="obGender" class="input-field" required>
+                <option value="">Select…</option>
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <button type="button" onclick="goToStep2()" class="btn-primary">Next →</button>
+        </div>
+
+        <!-- Step 2 -->
+        <div id="obStep2" class="space-y-4 hidden">
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-2">Fitness Goal</label>
+            <div class="grid grid-cols-2 gap-2">
+              <label class="goal-option" data-val="weight_loss">
+                <input type="radio" name="target" value="weight_loss" class="sr-only" />
+                <div class="glass p-3 rounded-xl cursor-pointer border border-white/10 hover:border-indigo-500/40 transition-all text-center" style="border-radius:0.75rem;">
+                  <div class="text-xl mb-1">🔥</div>
+                  <div class="text-xs font-medium text-slate-300">Weight Loss</div>
+                </div>
+              </label>
+              <label class="goal-option" data-val="muscle_gain">
+                <input type="radio" name="target" value="muscle_gain" class="sr-only" />
+                <div class="glass p-3 rounded-xl cursor-pointer border border-white/10 hover:border-indigo-500/40 transition-all text-center" style="border-radius:0.75rem;">
+                  <div class="text-xl mb-1">💪</div>
+                  <div class="text-xs font-medium text-slate-300">Muscle Gain</div>
+                </div>
+              </label>
+              <label class="goal-option" data-val="endurance">
+                <input type="radio" name="target" value="endurance" class="sr-only" />
+                <div class="glass p-3 rounded-xl cursor-pointer border border-white/10 hover:border-indigo-500/40 transition-all text-center" style="border-radius:0.75rem;">
+                  <div class="text-xl mb-1">🏃</div>
+                  <div class="text-xs font-medium text-slate-300">Endurance</div>
+                </div>
+              </label>
+              <label class="goal-option" data-val="general_fitness">
+                <input type="radio" name="target" value="general_fitness" class="sr-only" />
+                <div class="glass p-3 rounded-xl cursor-pointer border border-white/10 hover:border-indigo-500/40 transition-all text-center" style="border-radius:0.75rem;">
+                  <div class="text-xl mb-1">⚡</div>
+                  <div class="text-xs font-medium text-slate-300">General Fitness</div>
+                </div>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium text-slate-400 mb-2">Dietary Restrictions (select all that apply)</label>
+            <div class="flex flex-wrap gap-2" id="dietTags">
+              <button type="button" class="tag-btn" data-val="vegetarian">🥗 Vegetarian</button>
+              <button type="button" class="tag-btn" data-val="vegan">🌱 Vegan</button>
+              <button type="button" class="tag-btn" data-val="gluten_free">🌾 Gluten-Free</button>
+              <button type="button" class="tag-btn" data-val="dairy_free">🥛 Dairy-Free</button>
+              <button type="button" class="tag-btn" data-val="nut_allergy">🥜 Nut Allergy</button>
+              <button type="button" class="tag-btn" data-val="halal">☪️ Halal</button>
+              <button type="button" class="tag-btn" data-val="keto">🥩 Keto</button>
+            </div>
+          </div>
+
+          <p id="obError" class="text-red-400 text-xs hidden"></p>
+
+          <div class="flex gap-3">
+            <button type="button" onclick="goToStep1()" class="flex-1 py-2.5 rounded-xl border border-white/10 text-slate-400 hover:text-white hover:border-white/20 transition-all text-sm font-medium">
+              ← Back
+            </button>
+            <button type="submit" class="btn-primary flex-1" id="obSubmitBtn">Get Started 🚀</button>
+          </div>
+        </div>
+
+      </form>
+    </div>
+  </div>
+
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/auth.js"></script>
+</body>
+</html>

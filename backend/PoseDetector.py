@@ -181,15 +181,26 @@ class PoseDetectorModified:
 
 
 def main():
-    """Quick smoke-test: open webcam and show RTMPose skeleton."""
+    """
+    Quick smoke-test: open webcam and show RTMPose skeleton.
+
+    Fixes applied (video_pipeline_implementation_plan.md):
+    -------------------------------------------------------
+    • cap.set(CAP_PROP_BUFFERSIZE, 1)  → eliminates stale-frame accumulation
+    • cv2.waitKey(1) instead of (10)   → removes the artificial 10ms/frame floor
+      that was gating inference time unnecessarily.
+    """
     detector = PoseDetectorModified()
     cap = cv2.VideoCapture(0)
+    # Fix: buffer=1 ensures we always process the latest frame, never a stale one
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     while cap.isOpened():
         ret, img = cap.read()
         if ret:
             img = detector.findPose(img, draw=True)
             cv2.imshow("RTMPose", img)
-        if cv2.waitKey(10) & 0xFF == ord("q"):
+        # Fix: waitKey(1) instead of waitKey(10) — reduces artificial floor from 10ms to ~1ms
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
     cap.release()
     cv2.destroyAllWindows()

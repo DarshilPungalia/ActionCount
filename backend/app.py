@@ -565,6 +565,244 @@ def render_upload_mode(exercise_name: str):
             f"✅ Analysis complete — **{int(counter_obj.counter)} reps** detected!"
         )
 
+# ── WebRTC Video Processor ────────────────────────────────────────────────────
+class ExerciseVideoProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.counter_obj = None
+        self._lock = threading.Lock()
+        self._last_stats = {"counter": 0, "feedback": "Get in Position",
+                            "progress": 0.0, "correct_form": False}
+
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        if self.counter_obj is not None:
+            result = self.counter_obj.process_frame(img)
+            with self._lock:
+                self._last_stats = {k: v for k, v in result.items() if k != "frame"}
+            return av.VideoFrame.from_ndarray(result["frame"], format="bgr24")
+        return frame
+
+    def get_stats(self):
+        with self._lock:
+            return dict(self._last_stats)
+
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+def render_sidebar():
+    with st.sidebar:
+        st.markdown("""
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 0 20px;
+            border-bottom:1px solid rgba(255,255,255,0.07);margin-bottom:16px;">
+            <span style="font-size:1.6rem;">🏋️</span>
+            <h1 style="font-size:1.15rem;font-weight:700;margin:0;
+                background:linear-gradient(135deg,#6366f1,#10b981);
+                -webkit-background-clip:text;-webkit-text-fill-color:transparent;">
+                ActionCount</h1>
+        </div>""", unsafe_allow_html=True)
+
+        # Username display
+        st.markdown(f"<p style='color:#6b7280;font-size:0.8rem;margin-bottom:12px;'>👤 {st.session_state.username}</p>",
+                    unsafe_allow_html=True)
+
+        # Page navigation
+        st.markdown("**Navigation**")
+        pages = {"🎯 Tracker": "tracker", "📊 Dashboard": "dashboard", "🤖 AI Coach": "chatbot"}
+        for label, key in pages.items():
+            active = st.session_state.page == key
+            if st.button(label, use_container_width=True,
+                         type="primary" if active else "secondary"):
+                st.session_state.page = key
+                st.rerun()
+
+        st.divider()
+
+        if st.session_state.page == "tracker":
+            exercise_name = st.selectbox("**Exercise**", list(EXERCISES.keys()),
+                                         key="exercise_select")
+            mode = st.radio("**Input Mode**",
+                            ["📸 Live Webcam", "📁 Upload Video"], key="mode_select")
+            st.divider()
+
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("🔄 Reset", use_container_width=True):
+                    if st.session_state.counter_obj:
+                        st.session_state.counter_obj.reset()
+                    st.toast("Counter reset!", icon="✅")
+            with c2:
+                if st.button("🆕 New", use_container_width=True):
+                    cls, _ = EXERCISES[exercise_name]
+                    st.session_state.counter_obj = cls()
+                    st.session_state.last_exercise = exercise_name
+                    st.toast(f"Started {exercise_name}!", icon="🏁")
+        else:
+            exercise_name, mode = None, None
+
+        st.divider()
+        if st.button("🚪 Logout", use_container_width=True):
+            for k in list(st.session_state.keys()):
+                del st.session_state[k]
+            st.rerun()
+
+    return exercise_name, mode
+
+
+# ── Stats panel helper ────────────────────────────────────────────────────────
+def render_stats_panel(counter, feedback, progress, correct_form):
+    fb_colour = FEEDBACK_COLOUR.get(feedback, "#9ca3af")
+    fb_emoji  = FEEDBACK_EMOJI.get(feedback, "")
+    st.markdown(f"""
+    <div class="stat-card" style="border-color:rgba(16,185,129,0.25);">
+        <div class="stat-label">Reps This Session</div>
+        <div class="stat-value">{counter}</div>
+    </div>
+    <div class="stat-card" style="border-color:{fb_colour}44;">
+        <div class="stat-label">Form Feedback</div>
+        <div class="stat-value-sm" style="color:{fb_colour};">{fb_emoji} {feedback}</div>
+    </div>""", unsafe_allow_html=True)
+    st.progress(int(progress) / 100)
+    st.caption(f"{int(progress)}% complete")
+    if correct_form:
+        st.success("✅ Form Unlocked")
+    else:
+        st.info("📍 Get in Position")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRACKER PAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def render_tracker_page(exercise_name, mode):
+    # Lazy init counter
+    if ("counter_obj" not in st.session_state or st.session_state.counter_obj is None
+            or st.session_state.get("last_exercise") != exercise_name):
+        cls, _ = EXERCISES[exercise_name]
+        st.session_state.counter_obj  = cls()
+        st.session_state.last_exercise = exercise_name
+
+    st.markdown("""
+    <div style="text-align:center;padding:12px 0 4px;">
+        <h1 style="font-size:2.2rem;font-weight:800;
+            background:linear-gradient(135deg,#6366f1,#10b981);
+            -webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px;">
+            SmartSpotter</h1>
+        <p style="color:#6b7280;font-size:0.9rem;">Rep counting powered by MediaPipe Pose Estimation</p>
+    </div>""", unsafe_allow_html=True)
+
+    if "Webcam" in mode:
+        _render_webcam(exercise_name)
+    else:
+        _render_upload(exercise_name)
+
+
+def _render_webcam(exercise_name):
+    vid_col, stats_col = st.columns([3, 1], gap="large")
+    with vid_col:
+        st.markdown(f"### {exercise_name}")
+        ctx = webrtc_streamer(
+            key=f"exercise-{exercise_name}",
+            mode=WebRtcMode.SENDRECV,
+            video_processor_factory=ExerciseVideoProcessor,
+            rtc_configuration=RTC_CONFIG,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+        if ctx.video_processor:
+            ctx.video_processor.counter_obj = st.session_state.counter_obj
+
+    with stats_col:
+        st.markdown("### 📊 Stats")
+        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
+        if ctx.state.playing and ctx.video_processor:
+            stats = ctx.video_processor.get_stats()
+
+        ph = st.empty()
+        with ph.container():
+            render_stats_panel(stats["counter"], stats["feedback"],
+                               stats["progress"], stats["correct_form"])
+
+        if st.button("🔄 Refresh Stats", use_container_width=True):
+            if ctx.video_processor:
+                stats = ctx.video_processor.get_stats()
+            with ph.container():
+                render_stats_panel(stats["counter"], stats["feedback"],
+                                   stats["progress"], stats["correct_form"])
+
+        st.divider()
+        # Save Set button
+        reps = stats.get("counter", 0)
+        _, display_name = EXERCISES[exercise_name]
+        if st.button(f"✅ Save Set ({reps} reps)", use_container_width=True,
+                     type="primary", disabled=(reps == 0)):
+            db.save_workout(st.session_state.username, display_name, reps, 1)
+            st.toast(f"Saved {reps} reps of {display_name}!", icon="💾")
+            if st.session_state.counter_obj:
+                st.session_state.counter_obj.reset()
+
+
+def _render_upload(exercise_name):
+    st.markdown(f"### {exercise_name} — Video Analysis")
+    uploaded = st.file_uploader("Drop a workout video here",
+                                type=["mp4", "avi", "mov", "mkv"], key="video_upload")
+    if not uploaded:
+        st.info("📁 Upload a video to analyse your exercise form and count reps.")
+        return
+
+    vid_col, stats_col = st.columns([3, 1], gap="large")
+    with vid_col:
+        frame_ph = st.empty()
+        prog_ph  = st.empty()
+    with stats_col:
+        st.markdown("### 📊 Analysis")
+        counter_ph  = st.empty()
+        feedback_ph = st.empty()
+        form_ph     = st.empty()
+
+    if st.button("▶ Start Analysis", type="primary", use_container_width=True):
+        obj = st.session_state.counter_obj
+        obj.reset()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
+
+        cap   = cv2.VideoCapture(tmp_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        idx   = 0
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                result = obj.process_frame(frame)
+                rgb    = cv2.cvtColor(result["frame"], cv2.COLOR_BGR2RGB)
+                frame_ph.image(rgb, channels="RGB", use_column_width=True)
+                prog_ph.progress(idx / total, text=f"Frame {idx}/{total}")
+                fb_c = FEEDBACK_COLOUR.get(result["feedback"], "#9ca3af")
+                fb_e = FEEDBACK_EMOJI.get(result["feedback"], "")
+                with counter_ph.container():
+                    st.markdown(f"""<div class="stat-card">
+                        <div class="stat-label">Reps</div>
+                        <div class="stat-value">{result['counter']}</div></div>""",
+                                unsafe_allow_html=True)
+                with feedback_ph.container():
+                    st.markdown(f"""<div class="stat-card" style="border-color:{fb_c}44;">
+                        <div class="stat-label">Feedback</div>
+                        <div class="stat-value-sm" style="color:{fb_c};">{fb_e} {result['feedback']}</div>
+                        </div>""", unsafe_allow_html=True)
+                idx += 1
+        finally:
+            cap.release()
+            os.unlink(tmp_path)
+
+        prog_ph.empty()
+        final_reps = int(obj.counter)
+        _, display_name = EXERCISES[exercise_name]
+        form_ph.success(f"✅ Done — **{final_reps} reps** detected!")
+        if final_reps > 0 and st.button("💾 Save to History", type="primary"):
+            db.save_workout(st.session_state.username, display_name, final_reps, 1)
+            st.toast("Workout saved!", icon="✅")
+
+
 
 def main():
     inject_css()

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -8,9 +8,56 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="styles.css" />
+  <style>
+    .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; display:inline-block; }
+    .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
+    .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
+    .save-set-btn {
+      width:100%; margin-top:8px;
+      background: linear-gradient(135deg,#10b981,#059669);
+      color:#fff; border:none; border-radius:10px; padding:10px 16px;
+      font-size:0.9rem; font-weight:600; cursor:pointer;
+      transition:all 0.2s; display:flex; align-items:center; justify-content:center; gap:6px;
+    }
+    .save-set-btn:hover { filter:brightness(1.1); transform:translateY(-1px); box-shadow:0 6px 20px rgba(16,185,129,0.35); }
+    .save-set-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
+    #save-toast {
+      position:fixed; bottom:24px; right:24px; z-index:9999;
+      background:#10b981; color:#fff; padding:10px 18px; border-radius:12px;
+      font-size:0.85rem; font-weight:600;
+      opacity:0; transform:translateY(16px);
+      transition:all 0.3s; pointer-events:none;
+    }
+    #save-toast.show { opacity:1; transform:translateY(0); }
+    #tracker-nav {
+      position:sticky; top:0; z-index:40;
+      background:rgba(10,14,26,0.85); backdrop-filter:blur(20px);
+      border-bottom:1px solid rgba(255,255,255,0.06);
+    }
+  </style>
 </head>
 <body>
+
+  <!-- ===================== TOP NAV ===================== -->
+  <nav id="tracker-nav">
+    <div style="max-width:1200px;margin:0 auto;padding:0 1rem;height:56px;display:flex;align-items:center;justify-content:space-between;">
+      <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;">
+        <span style="font-size:1.5rem;">🏋️</span>
+        <span style="font-weight:800;color:#fff;font-size:1rem;">ActionCount</span>
+      </a>
+      <div style="display:flex;gap:4px;">
+        <a href="/" class="nav-pill active">Tracker</a>
+        <a href="/dashboard" class="nav-pill">Dashboard</a>
+        <a href="/chatbot" class="nav-pill">AI Coach</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span id="nav-username" style="font-size:0.8rem;color:#64748b;"></span>
+        <button onclick="Auth.logout()" style="font-size:0.8rem;color:#64748b;background:none;border:none;cursor:pointer;" onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='#64748b'">Logout</button>
+      </div>
+    </div>
+  </nav>
 
   <!-- ===================== ANIMATED BACKGROUND ===================== -->
   <div class="bg-orbs" aria-hidden="true">
@@ -131,6 +178,12 @@
             <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
             Reset Count
           </button>
+
+          <!-- ── Save Set Button (NEW) ── -->
+          <button id="btn-save-set" class="save-set-btn" aria-label="Save current reps as a set" disabled>
+            ✅ Save Set
+          </button>
+          <div style="font-size:0.7rem;color:#4b5563;text-align:center;margin-top:4px;" id="save-hint">Complete some reps first</div>
         </section>
 
         <!-- Connection status -->
@@ -226,6 +279,16 @@
 
   </div><!-- /app-shell -->
 
+  <!-- Toast notification -->
+  <div id="save-toast">✅ Set saved to your history!</div>
+
+  <script src="/static/js/api.js"></script>
+  <script>
+    // Auth guard
+    if (!Auth.isLoggedIn()) window.location.href = '/login';
+    document.getElementById('nav-username').textContent = Auth.username();
+  </script>
   <script src="app.js" type="module"></script>
+  <script src="/static/js/tracker.js"></script>
 </body>
 </html>
