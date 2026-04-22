@@ -68,28 +68,44 @@
           </div>
         </section>
 
-        <!-- Stats HUD -->
-        <section class="card stats-card" aria-labelledby="stats-label">
-          <h2 id="stats-label" class="card-title">
+        <!-- Stats Panel (mirrors Streamlit stat cards) -->
+        <section class="card stats-panel" aria-labelledby="stats-panel-label">
+          <h2 id="stats-panel-label" class="card-title">
             <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
             Stats
           </h2>
-          <div class="stats-grid">
-            <div class="stat-item">
-              <span id="rep-count" class="stat-value" aria-live="polite" aria-label="Rep count">0</span>
-              <span class="stat-label">Reps</span>
-            </div>
-            <div class="stat-item">
-              <span id="angle-value" class="stat-value" aria-live="polite" aria-label="Current angle">—</span>
-              <span class="stat-label">Angle °</span>
-            </div>
-            <div class="stat-item stat-stage">
-              <span id="stage-badge" class="stage-badge" aria-live="polite" aria-label="Movement stage">—</span>
-              <span class="stat-label">Stage</span>
+
+          <!-- Reps This Session -->
+          <div class="stat-card stat-card--reps" id="reps-card">
+            <div class="stat-card-label">Reps This Session</div>
+            <div class="stat-card-value" id="rep-count" aria-live="polite" aria-label="Rep count">0</div>
+          </div>
+
+          <!-- Form Feedback -->
+          <div class="stat-card stat-card--feedback" id="feedback-card">
+            <div class="stat-card-label">Form Feedback</div>
+            <div class="stat-card-feedback" id="feedback-value" aria-live="polite">
+              <span id="feedback-emoji">📍</span>
+              <span id="feedback-text">Get in Position</span>
             </div>
           </div>
 
-          <!-- Angle arc -->
+          <!-- Exercise Progress -->
+          <div class="stat-card" id="progress-card">
+            <div class="stat-card-label">Exercise Progress</div>
+            <div class="progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="Exercise progress">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-pct-label" id="progress-pct-label">0% complete</div>
+          </div>
+
+          <!-- Form Status -->
+          <div class="form-status" id="form-status">
+            <span class="form-status-dot" id="form-status-dot"></span>
+            <span id="form-status-text">📍 Get in Position</span>
+          </div>
+
+          <!-- Legacy angle arc (hidden by default, shown for angle stat) -->
           <div class="angle-arc-wrap" aria-hidden="true">
             <svg id="angle-arc-svg" viewBox="0 0 120 70" class="angle-arc">
               <path d="M10 65 A55 55 0 0 1 110 65" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8" stroke-linecap="round"/>
@@ -98,7 +114,7 @@
               <defs>
                 <linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
                   <stop offset="0%"   stop-color="#6366f1"/>
-                  <stop offset="100%" stop-color="#06b6d4"/>
+                  <stop offset="100%" stop-color="#10b981"/>
                 </linearGradient>
               </defs>
             </svg>

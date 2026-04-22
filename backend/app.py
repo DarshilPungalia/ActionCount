@@ -1,320 +1,592 @@
-"""
-app.py
-------
-FastAPI entry point for the ActionCount rep-counter backend.
-
-Endpoints
----------
-GET  /                          → serve frontend/index.html
-GET  /exercises                 → list available exercise slugs
-POST /session/start             → create a session, return session_id
-POST /session/{sid}/reset       → reset rep count
-POST /upload/process            → upload a video file, get back MJPEG stream
-WS   /ws/stream/{session_id}    → live camera WebSocket
-
-WebSocket binary protocol
---------------------------
-Client → Server : raw JPEG bytes (one frame per message)
-Server → Client : JSON  { count, angle, stage, keypoints, skipped }
-"""
-
-from __future__ import annotations
-
-import asyncio
+import warnings
 import os
 import sys
+import threading
 import tempfile
-import time
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Optional
+import warnings
 
+import av
 import cv2
-import numpy as np
-import uvicorn
-from fastapi import (
-    FastAPI, File, Form, HTTPException,
-    UploadFile, WebSocket, WebSocketDisconnect,
+import streamlit as st
+from streamlit_webrtc import (
+    VideoProcessorBase,
+    WebRtcMode,
+    webrtc_streamer,
+    RTCConfiguration,
 )
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Path setup — make backend/ importable as a package
-# ---------------------------------------------------------------------------
-BACKEND_DIR  = Path(__file__).parent.resolve()
-FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
-ROOT_DIR     = BACKEND_DIR.parent
+warnings.filterwarnings("ignore")
 
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+# Ensure project root is on path for `backend.*`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PoseDetector   import PoseDetector        # noqa: E402
-from session_manager import SessionManager      # noqa: E402
-
-# ---------------------------------------------------------------------------
-# App init
-# ---------------------------------------------------------------------------
-
-# Shared pose detector — loaded once at startup
-_detector: Optional[PoseDetector] = None
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Load the pose detector once at startup; clean up on shutdown."""
-    global _detector
-    _detector = PoseDetector(mode="balanced", backend="onnxruntime", device="cpu")
-    print("[ActionCount] PoseDetector initialised.")
-    yield
-    _detector = None
-    print("[ActionCount] Shutdown complete.")
-
-app = FastAPI(title="ActionCount", version="1.0.0", lifespan=lifespan)
-
-# Serve frontend static files at /static
-if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-PROCESS_W    = 480    # width sent from client for inference
-PROCESS_H    = 270    # height sent from client for inference (16:9)
-TARGET_FPS   = 30
-MIN_FRAME_MS = 1000 / TARGET_FPS           # ≈ 33.3 ms
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-class StartSessionRequest(BaseModel):
-    exercise: str   # e.g. "squat"
-
-class StartSessionResponse(BaseModel):
-    session_id: str
-    exercise:   str
-
-# ---------------------------------------------------------------------------
-# Routes — static / meta
-# ---------------------------------------------------------------------------
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the frontend index.html."""
-    html_path = FRONTEND_DIR / "index.html"
-    if html_path.exists():
-        return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h1>Frontend not found. Place files in frontend/</h1>", status_code=404)
+from backend.counters.BicepCurlCounter    import BicepCurlCounter
+from backend.counters.PushupCounter       import PushupCounter
+from backend.counters.PullupCounter       import PullupCounter
+from backend.counters.SquatCounter        import SquatCounter
+from backend.counters.LateralRaiseCounter import LateralRaiseCounter
+from backend.counters.OverheadPressCounter import OverheadPressCounter
+from backend.counters.SitupCounter        import SitupCounter
+from backend.counters.CrunchCounter       import CrunchCounter
+from backend.counters.LegRaiseCounter     import LegRaiseCounter
+from backend.counters.KneeRaiseCounter    import KneeRaiseCounter
+from backend.counters.KneePressCounter    import KneePressCounter
 
 
-@app.get("/exercises")
-async def list_exercises():
-    """Return the list of supported exercise slugs."""
-    mgr = SessionManager.instance()
-    return {"exercises": mgr.list_exercises()}
+st.set_page_config(
+    page_title="SmartSpotter",
+    page_icon="🏋️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# ---------------------------------------------------------------------------
-# Session management
-# ---------------------------------------------------------------------------
+EXERCISES: dict = {
+    "💪  Bicep Curl":      BicepCurlCounter,
+    "🔼  Push-Up":         PushupCounter,
+    "🏋️  Pull-Up":        PullupCounter,
+    "🦵  Squat":           SquatCounter,
+    "🦾  Lateral Raise":   LateralRaiseCounter,
+    "⬆️  Overhead Press": OverheadPressCounter,
+    "🧘  Sit-Up":          SitupCounter,
+    "🤸  Crunch":          CrunchCounter,
+    "🦿  Leg Raise":       LegRaiseCounter,
+    "🦵  Knee Raise":      KneeRaiseCounter,
+    "🦵  Knee Press":      KneePressCounter,
+}
 
-@app.post("/session/start", response_model=StartSessionResponse)
-async def start_session(body: StartSessionRequest):
-    """Create a new rep-counter session."""
-    mgr = SessionManager.instance()
-    try:
-        sid = mgr.create(body.exercise, _detector)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return StartSessionResponse(session_id=sid, exercise=body.exercise)
+
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
+
+FEEDBACK_EMOJI = {
+    "Up":               "⬆️",
+    "Down":             "⬇️",
+    "Fix Form":         "⚠️",
+    "Get in Position":  "📍",
+}
+
+FEEDBACK_COLOUR = {
+    "Up":               "#10b981",
+    "Down":             "#3b82f6",
+    "Fix Form":         "#ef4444",
+    "Get in Position":  "#9ca3af",
+}
 
 
-@app.post("/session/{session_id}/reset")
-async def reset_session(session_id: str):
-    """Reset the rep count for an existing session."""
-    mgr = SessionManager.instance()
-    try:
-        mgr.reset(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
-    return {"status": "reset", "session_id": session_id}
+def inject_css():
+    st.markdown("""
+    <style>
+    /* ── Global ────────────────────────────────────────────────────────────── */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-# ---------------------------------------------------------------------------
-# Video upload endpoint
-# ---------------------------------------------------------------------------
+    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-@app.post("/upload/process")
-async def upload_process(
-    file: UploadFile = File(...),
-    exercise: str    = Form(...),
-):
+    [data-testid="stAppViewContainer"] {
+        background: radial-gradient(ellipse at 20% 10%, #0f172a 0%, #0a0e1a 60%, #050810 100%);
+        color: #f1f5f9;
+    }
+    [data-testid="stHeader"] { background: transparent; }
+
+    /* ── Sidebar ────────────────────────────────────────────────────────────── */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #111827 0%, #0f1623 100%);
+        border-right: 1px solid rgba(99,102,241,0.15);
+    }
+    [data-testid="stSidebar"] .stMarkdown p,
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] span {
+        color: #d1d5db !important;
+    }
+    [data-testid="stSidebarNav"] { display: none; }
+
+    /* ── Sidebar title ──────────────────────────────────────────────────────── */
+    .sidebar-brand {
+        display: flex; align-items: center; gap: 12px;
+        padding: 8px 0 20px 0;
+        border-bottom: 1px solid rgba(255,255,255,0.07);
+        margin-bottom: 20px;
+    }
+    .sidebar-brand h1 {
+        font-size: 1.25rem !important;
+        font-weight: 700 !important;
+        color: #f9fafb !important;
+        margin: 0 !important;
+        background: linear-gradient(135deg, #6366f1, #10b981);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+
+    /* ── Page heading ───────────────────────────────────────────────────────── */
+    .page-header {
+        text-align: center;
+        padding: 16px 0 4px 0;
+    }
+    .page-header h1 {
+        font-size: 2.4rem;
+        font-weight: 800;
+        background: linear-gradient(135deg, #6366f1 20%, #10b981 80%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 4px;
+    }
+    .page-header p {
+        color: #6b7280;
+        font-size: 0.95rem;
+        margin: 0;
+    }
+
+    /* ── Stat cards ─────────────────────────────────────────────────────────── */
+    .stat-card {
+        background: rgba(255,255,255,0.035);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 16px;
+        padding: 22px 20px;
+        backdrop-filter: blur(12px);
+        margin-bottom: 14px;
+        transition: border-color 0.2s;
+    }
+    .stat-card:hover { border-color: rgba(99,102,241,0.35); }
+    .stat-label {
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #6b7280;
+        margin-bottom: 6px;
+    }
+    .stat-value {
+        font-size: 3.5rem;
+        font-weight: 800;
+        line-height: 1;
+        color: #10b981;
+        font-variant-numeric: tabular-nums;
+    }
+    .stat-value-sm {
+        font-size: 1.6rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+
+    /* ── Feedback badge ─────────────────────────────────────────────────────── */
+    .feedback-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 18px;
+        border-radius: 50px;
+        font-size: 1rem;
+        font-weight: 600;
+        border: 1.5px solid;
+    }
+
+    /* ── Progress bar override ──────────────────────────────────────────────── */
+    .stProgress > div > div > div > div {
+        background: linear-gradient(90deg, #6366f1, #10b981) !important;
+        border-radius: 8px !important;
+    }
+    .stProgress > div > div {
+        background: rgba(255,255,255,0.06) !important;
+        border-radius: 8px !important;
+    }
+
+    /* ── Buttons ────────────────────────────────────────────────────────────── */
+    .stButton > button {
+        background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
+        color: #fff !important;
+        border: none !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+        padding: 0.55em 1.4em !important;
+        transition: all 0.2s ease !important;
+        box-shadow: 0 4px 18px rgba(99,102,241,0.28) !important;
+    }
+    .stButton > button:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 24px rgba(99,102,241,0.45) !important;
+    }
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #10b981, #059669) !important;
+        box-shadow: 0 4px 18px rgba(16,185,129,0.28) !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        box-shadow: 0 6px 24px rgba(16,185,129,0.45) !important;
+    }
+
+    /* ── Select / radio ─────────────────────────────────────────────────────── */
+    [data-testid="stSelectbox"] > div > div {
+        background: rgba(255,255,255,0.05) !important;
+        border: 1px solid rgba(99,102,241,0.25) !important;
+        border-radius: 10px !important;
+        color: #f1f5f9 !important;
+    }
+    [data-testid="stRadio"] > div {
+        background: rgba(255,255,255,0.03) !important;
+        border: 1px solid rgba(255,255,255,0.07) !important;
+        border-radius: 10px !important;
+        padding: 8px 12px !important;
+    }
+
+    /* ── File uploader ──────────────────────────────────────────────────────── */
+    [data-testid="stFileUploader"] > div {
+        background: rgba(255,255,255,0.03) !important;
+        border: 2px dashed rgba(99,102,241,0.35) !important;
+        border-radius: 14px !important;
+    }
+    [data-testid="stFileUploader"] label { color: #9ca3af !important; }
+
+    /* ── Video / image frames ───────────────────────────────────────────────── */
+    [data-testid="stImage"] img {
+        border-radius: 14px;
+        border: 1px solid rgba(99,102,241,0.2);
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    /* WebRTC video */
+    video { border-radius: 14px !important; }
+
+    /* ── Info / success / warning boxes ─────────────────────────────────────── */
+    [data-testid="stInfo"] {
+        background: rgba(99,102,241,0.08) !important;
+        border: 1px solid rgba(99,102,241,0.25) !important;
+        border-radius: 10px !important;
+    }
+    [data-testid="stSuccess"] {
+        background: rgba(16,185,129,0.08) !important;
+        border: 1px solid rgba(16,185,129,0.25) !important;
+        border-radius: 10px !important;
+    }
+
+    /* ── Divider ────────────────────────────────────────────────────────────── */
+    hr { border-color: rgba(255,255,255,0.07) !important; }
+
+    /* ── Scrollbar ──────────────────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0a0e1a; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #6366f1; }
+    </style>
+    """, unsafe_allow_html=True)
+
+class ExerciseVideoProcessor(VideoProcessorBase):
     """
-    Accept an uploaded video file.
-    Process it with the chosen exercise counter.
-    Stream back an MJPEG response (displayable in <img src=…> or via fetch).
+    Bridges streamlit-webrtc's WebRTC thread with the exercise counter.
+
+    Why WebRTC over st.camera_input?
+      • Frames are processed in a dedicated background thread → UI never blocks.
+      • ~30 FPS throughput vs. single-snapshot per click with camera_input.
+      • Direct browser ↔ Python peer connection over SRTP — lowest possible latency.
+      • All stat overlays are rendered on the video itself, visible in real-time.
     """
-    mgr = SessionManager.instance()
 
-    # Write upload to a temp file so OpenCV can open it
-    suffix = Path(file.filename).suffix or ".mp4"
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
+    def __init__(self):
+        self.counter_obj = None
+        self._lock = threading.Lock()
+        self._last_stats: dict = {
+            "counter": 0,
+            "feedback": "Get in Position",
+            "progress": 0.0,
+            "correct_form": False,
+        }
 
-    # Create a dedicated session for this upload
-    try:
-        sid = mgr.create(exercise, _detector)
-    except ValueError as e:
-        os.unlink(tmp_path)
-        raise HTTPException(status_code=400, detail=str(e))
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
 
-    async def _generate_mjpeg():
-        session = mgr.get(sid)
-        cap     = cv2.VideoCapture(tmp_path)
+        if self.counter_obj is not None:
+            result = self.counter_obj.process_frame(img)
+            with self._lock:
+                self._last_stats = {k: v for k, v in result.items() if k != "frame"}
+            return av.VideoFrame.from_ndarray(result["frame"], format="bgr24")
 
-        # Read source FPS for pacing; fall back to 30 if unreadable
-        src_fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
-        frame_sec = 1.0 / src_fps
+        return frame
+
+    def get_stats(self) -> dict:
+        with self._lock:
+            return dict(self._last_stats)
+
+
+def _init_session():
+    if "last_exercise" not in st.session_state:
+        st.session_state.last_exercise = list(EXERCISES.keys())[0]
+    # Lazily initialise the counter only once (after Streamlit runtime is up)
+    if "counter_obj" not in st.session_state or st.session_state.counter_obj is None:
+        st.session_state.counter_obj = EXERCISES[st.session_state.last_exercise]()
+
+
+def render_sidebar() -> tuple[str, str]:
+    with st.sidebar:
+        st.markdown("""
+        <div class="sidebar-brand">
+            <h1>🏋️ SmartSpotter</h1>
+        </div>
+        """, unsafe_allow_html=True)
+
+        exercise_name = st.selectbox(
+            "**Exercise**", list(EXERCISES.keys()), key="exercise_select",
+            help="Select which exercise you want to track"
+        )
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        mode = st.radio(
+            "**Input Mode**",
+            ["📸  Live Webcam (WebRTC)", "📁  Upload Video"],
+            key="mode_select",
+        )
+
+        st.divider()
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🔄 Reset", use_container_width=True):
+                st.session_state.counter_obj.reset()
+                st.toast("Counter reset!", icon="✅")
+        with col_b:
+            if st.button("🆕 New", use_container_width=True,
+                         help="Change exercise & start fresh"):
+                st.session_state.counter_obj = EXERCISES[exercise_name]()
+                st.session_state.last_exercise = exercise_name
+                st.toast(f"Started {exercise_name}!", icon="🏁")
+
+        # Auto-switch counter when exercise changes
+        if exercise_name != st.session_state.last_exercise:
+            st.session_state.counter_obj = EXERCISES[exercise_name]()
+            st.session_state.last_exercise = exercise_name
+
+        st.divider()
+        st.markdown("""
+        <div style="color:#4b5563;font-size:0.75rem;line-height:1.6;">
+        <b style="color:#6b7280">How to use</b><br>
+        1. Select your exercise above<br>
+        2. Allow camera / upload a video<br>
+        3. Get into position & start moving<br>
+        4. Reps are counted automatically
+        </div>
+        """, unsafe_allow_html=True)
+
+    return exercise_name, mode
+
+def render_stats_panel(counter: int, feedback: str, progress: float, correct_form: bool):
+    fb_colour = FEEDBACK_COLOUR.get(feedback, "#9ca3af")
+    fb_emoji  = FEEDBACK_EMOJI.get(feedback, "")
+
+    # Rep counter card
+    st.markdown(f"""
+    <div class="stat-card" style="border-color:rgba(16,185,129,0.25);">
+        <div class="stat-label">Reps This Session</div>
+        <div class="stat-value">{counter}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Feedback card
+    st.markdown(f"""
+    <div class="stat-card" style="border-color:{fb_colour}44;">
+        <div class="stat-label">Form Feedback</div>
+        <div class="stat-value-sm" style="color:{fb_colour};">
+            {fb_emoji} {feedback}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Progress bar card
+    st.markdown("""
+    <div class="stat-card">
+        <div class="stat-label">Exercise Progress</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.progress(int(progress) / 100)
+    st.caption(f"{int(progress)}% complete")
+
+    # Form status indicator
+    form_col, _ = st.columns([1, 1])
+    with form_col:
+        if correct_form:
+            st.success("✅ Form Unlocked")
+        else:
+            st.info("📍 Get in Position")
+
+
+def render_webcam_mode(exercise_name: str):
+    vid_col, stats_col = st.columns([3, 1], gap="large")
+
+    with vid_col:
+        st.markdown(f"### {exercise_name}")
+
+        ctx = webrtc_streamer(
+            key=f"exercise-{exercise_name}",
+            mode=WebRtcMode.SENDRECV,
+            video_processor_factory=ExerciseVideoProcessor,
+            rtc_configuration=RTC_CONFIG,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+
+        if ctx.video_processor:
+            ctx.video_processor.counter_obj = st.session_state.counter_obj
+
+        st.caption(
+            "📌 **Stats overlays are drawn live on the video feed.** "
+            "Click **Refresh Stats** in the panel → to sync the sidebar numbers."
+        )
+
+    with stats_col:
+        st.markdown("### 📊 Stats")
+
+        # Poll latest stats from the background thread
+        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
+        if ctx.state.playing and ctx.video_processor:
+            stats = ctx.video_processor.get_stats()
+
+        # Placeholder so we can refresh without full page reload
+        stats_ph = st.empty()
+        with stats_ph.container():
+            render_stats_panel(
+                stats["counter"],
+                stats["feedback"],
+                stats["progress"],
+                stats["correct_form"],
+            )
+
+        if st.button("🔄 Refresh Stats", use_container_width=True):
+            if ctx.video_processor:
+                stats = ctx.video_processor.get_stats()
+            with stats_ph.container():
+                render_stats_panel(
+                    stats["counter"],
+                    stats["feedback"],
+                    stats["progress"],
+                    stats["correct_form"],
+                )
+
+        st.divider()
+        st.markdown("""
+        <div style="color:#4b5563;font-size:0.73rem;line-height:1.8;">
+        <b style="color:#6b7280;">WebRTC Benefits</b><br>
+        ⚡ ~30 FPS background thread<br>
+        📡 Direct peer connection<br>
+        🖥️ No UI blocking<br>
+        🔒 Encrypted SRTP stream
+        </div>
+        """, unsafe_allow_html=True)
+
+def render_upload_mode(exercise_name: str):
+    st.markdown(f"### {exercise_name} — Video Analysis")
+
+    uploaded = st.file_uploader(
+        "Drop a workout video here",
+        type=["mp4", "avi", "mov", "mkv"],
+        key="video_upload",
+        help="Supports MP4, AVI, MOV, MKV",
+    )
+
+    if not uploaded:
+        st.markdown("""
+        <div style="text-align:center;padding:40px;color:#4b5563;">
+            <div style="font-size:3rem;">📁</div>
+            <p>Upload a video to analyse your exercise form and count reps.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    vid_col, stats_col = st.columns([3, 1], gap="large")
+
+    with vid_col:
+        frame_ph  = st.empty()
+        prog_ph   = st.empty()
+
+    with stats_col:
+        st.markdown("### 📊 Analysis")
+        counter_ph  = st.empty()
+        feedback_ph = st.empty()
+        progress_ph = st.empty()
+        status_ph   = st.empty()
+        form_ph     = st.empty()
+
+    if st.button("▶  Start Analysis", type="primary", use_container_width=True):
+        counter_obj = st.session_state.counter_obj
+        counter_obj.reset()
+
+        # Save to a temp file so OpenCV can open it
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+            tmp.write(uploaded.getvalue())
+            tmp_path = tmp.name
+
+        cap = cv2.VideoCapture(tmp_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        frame_idx = 0
 
         try:
             while cap.isOpened():
-                t0 = asyncio.get_event_loop().time()
-
-                # cap.read() is blocking — run in thread pool
-                ret, frame = await asyncio.to_thread(cap.read)
+                ret, frame = cap.read()
                 if not ret:
                     break
 
-                # Run full inference on every frame
-                result = session.counter.process_frame(frame)
+                result = counter_obj.process_frame(frame)
+                rgb    = cv2.cvtColor(result["frame"], cv2.COLOR_BGR2RGB)
 
-                annotated = result["frame"]
+                frame_ph.image(rgb, channels="RGB", use_column_width=True)
+                prog_ph.progress(frame_idx / total, text=f"Processing frame {frame_idx}/{total}")
 
-                # Encode frame as JPEG (also blocking — run in thread)
-                ok, buf = await asyncio.to_thread(
-                    cv2.imencode, ".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 85]
-                )
-                if not ok:
-                    continue
+                fb_colour = FEEDBACK_COLOUR.get(result["feedback"], "#9ca3af")
+                fb_emoji  = FEEDBACK_EMOJI.get(result["feedback"], "")
 
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n"
-                    + buf.tobytes()
-                    + b"\r\n"
-                )
+                with counter_ph.container():
+                    st.markdown(f"""
+                    <div class="stat-card" style="border-color:rgba(16,185,129,0.25);">
+                        <div class="stat-label">Reps</div>
+                        <div class="stat-value">{result['counter']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-                # Pace output to match source video FPS
-                elapsed = asyncio.get_event_loop().time() - t0
-                sleep_s = max(0.0, frame_sec - elapsed)
-                if sleep_s > 0:
-                    await asyncio.sleep(sleep_s)
+                with feedback_ph.container():
+                    st.markdown(f"""
+                    <div class="stat-card" style="border-color:{fb_colour}44;">
+                        <div class="stat-label">Feedback</div>
+                        <div class="stat-value-sm" style="color:{fb_colour};">
+                            {fb_emoji} {result['feedback']}
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                with progress_ph.container():
+                    st.progress(int(result["progress"]) / 100)
+
+                frame_idx += 1
+
         finally:
             cap.release()
-            os.unlink(tmp_path)
-            mgr.destroy(sid)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
-    return StreamingResponse(
-        _generate_mjpeg(),
-        media_type="multipart/x-mixed-replace; boundary=frame",
-    )
-
-# ---------------------------------------------------------------------------
-# WebSocket — live camera feed
-# ---------------------------------------------------------------------------
-
-@app.websocket("/ws/stream/{session_id}")
-async def ws_stream(websocket: WebSocket, session_id: str):
-    """
-    Binary WebSocket endpoint for live camera rep counting.
-
-    Frame flow
-    ----------
-    1. Client sends a binary message: raw JPEG bytes at processing resolution.
-    2. Server decodes → runs pose pipeline → returns JSON result.
-    3. Client draws the skeleton overlay at display resolution.
-    """
-    mgr = SessionManager.instance()
-    try:
-        session = mgr.get(session_id)
-    except KeyError:
-        await websocket.close(code=4004)
-        return
-
-    await websocket.accept()
-    try:
-        while True:
-            # Receive binary JPEG frame from client
-            data = await websocket.receive_bytes()
-
-            now_ms = time.time() * 1000
-            elapsed = now_ms - (session.last_process_time * 1000 if session.last_process_time else 0)
-
-            # FPS cap — return last result if we're running too fast
-            if session.last_process_time and elapsed < MIN_FRAME_MS:
-                await websocket.send_json({**session.last_result, "skipped": True})
-                continue
-
-            session.last_process_time = time.time()
-
-            # Decode JPEG → BGR numpy array
-            frame = _decode_jpeg(data)
-            if frame is None:
-                await websocket.send_json({"error": "invalid frame"})
-                continue
-
-            # Run full inference on every frame
-            det = session.counter.detector
-            det.findPose(frame)
-            kps = det.findPosition(frame)
-
-            if kps is not None:
-                result = session.counter._compute(frame, kps)
-            else:
-                result = session.counter._make_result(frame, angle=None)
-                kps    = None
-
-            # Build JSON response (no annotated frame on the hot path —
-            # client draws its own overlay using the returned keypoints)
-            kps_list = _kps_to_list(kps)
-            payload  = {
-                "count":     result["count"],
-                "angle":     round(result["angle"], 1) if result["angle"] is not None else None,
-                "stage":     result["stage"],
-                "keypoints": kps_list,
-                "skipped":   False,
-            }
-            session.last_result = payload
-            await websocket.send_json(payload)
-
-    except WebSocketDisconnect:
-        pass
-    finally:
-        mgr.destroy(session_id)
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _decode_jpeg(data: bytes) -> Optional[np.ndarray]:
-    """Decode a JPEG byte buffer to a BGR numpy array."""
-    arr = np.frombuffer(data, dtype=np.uint8)
-    if arr.size == 0:
-        return None
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return frame  # may be None if decode fails
+        prog_ph.empty()
+        status_ph.success(
+            f"✅ Analysis complete — **{int(counter_obj.counter)} reps** detected!"
+        )
 
 
-def _kps_to_list(kps: Optional[np.ndarray]) -> Optional[list]:
-    """Convert (17,2) numpy array to JSON-serialisable list of [x, y] pairs."""
-    if kps is None:
-        return None
-    return [[round(float(x), 2), round(float(y), 2)] for x, y in kps]
+def main():
+    inject_css()
+    _init_session()
+
+    exercise_name, mode = render_sidebar()
+
+    # Page header
+    st.markdown("""
+    <div class="page-header">
+        <h1>SmartSpotter</h1>
+        <p>Rep counting powered by MediaPipe Pose Estimation & WebRTC</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if "Webcam" in mode:
+        render_webcam_mode(exercise_name)
+    else:
+        render_upload_mode(exercise_name)
 
 
-# ---------------------------------------------------------------------------
-# Run
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    main()

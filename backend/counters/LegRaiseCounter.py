@@ -1,42 +1,73 @@
 """
 LegRaiseCounter.py
 ------------------
-Counts leg-raise reps using shoulder-hip-ankle angle (per_limb).
+Counts leg-raise reps using hip-knee-ankle angle (per_limb).
 
-Keypoints  : left  5-11-15   |  right  6-12-16
+COCO-17 keypoints:
+  Left leg  : hip=11, knee=13, ankle=15
+  Right leg : hip=12, knee=14, ankle=16
+
 UP_ANGLE   : 160°  (legs lowered — lying flat)
-DOWN_ANGLE : 130°  (legs raised to ~45° or higher)
+DOWN_ANGLE : 110°  (legs raised to ~45° or higher)
 MODE       : per_limb
 
 Each leg is tracked independently; every full single-leg raise counts.
+Inverted=False:
+  stage='up'   when angle > 160 (legs lowered flat)
+  stage='down' (+ count) when angle < 110 AND stage was 'up'
 """
 
 import numpy as np
-from counters.BaseCounter import BaseCounter
-from PoseDetector import PoseDetector
+from backend.counters.BaseCounter import BaseCounter
 
 
 class LegRaiseCounter(BaseCounter):
 
-    LEFT_KPS   = [5, 11, 15]
-    RIGHT_KPS  = [6, 12, 16]
     UP_ANGLE   = 160
-    DOWN_ANGLE = 130
-    MODE       = "per_limb"
+    DOWN_ANGLE = 110
 
-    def _compute(self, frame: np.ndarray, kps: np.ndarray) -> dict:
-        left_angle  = self.detector.findAngle(kps, *self.LEFT_KPS)
-        right_angle = self.detector.findAngle(kps, *self.RIGHT_KPS)
+    def _compute(self, frame: np.ndarray, landmarks_list: list) -> tuple:
+        left_raw  = self.pose_detector.findAngle(frame, 11, 13, 15, landmarks_list, draw=True)
+        right_raw = self.pose_detector.findAngle(frame, 12, 14, 16, landmarks_list, draw=False)
 
-        if left_angle is None or right_angle is None:
-            return self._make_result(frame, angle=None)
+        left_angle, right_angle = self._active_per_limb(left_raw, right_raw)
 
-        angle = self._update_count(
-            left_angle, right_angle,
-            self.UP_ANGLE, self.DOWN_ANGLE,
-            self.MODE,
-        )
+        available = [a for a in (left_angle, right_angle) if a is not None]
+        if not available:
+            return self.progress_pct, self.exercise_feedback, self.correct_form
 
-        frame = self.detector._draw_skeleton(frame, kps)
-        frame = self._draw_overlays(frame, angle)
-        return self._make_result(frame, angle)
+        avg_angle    = sum(available) / len(available)
+        progress_pct = float(np.interp(avg_angle, (self.DOWN_ANGLE, self.UP_ANGLE), (100, 0)))
+        form_ok      = avg_angle > 140   # legs must start lowered
+
+        self._tick_per_limb(left_angle, right_angle, self.UP_ANGLE, self.DOWN_ANGLE, inverted=False)
+
+        if self.correct_form:
+            active_stage = self.left_stage or self.right_stage
+            if active_stage == "up" and self.counter > 0:
+                feedback = "Up"
+            elif active_stage == "down" or avg_angle <= self.DOWN_ANGLE or self.counter == 0:
+                feedback = "Down"
+            else:
+                feedback = self.exercise_feedback
+        else:
+            feedback = "Get in Position" if form_ok else "Fix Form"
+
+        return progress_pct, feedback, form_ok
+
+
+
+if __name__ == "__main__":
+    import cv2
+    counter = LegRaiseCounter()
+    cap = cv2.VideoCapture(0)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        result = counter.process_frame(frame)
+        cv2.imshow("Leg Raise Counter", result["frame"])
+        if cv2.waitKey(10) & 0xFF == ord("q"):
+            break
+    cap.release()
+    cv2.destroyAllWindows()

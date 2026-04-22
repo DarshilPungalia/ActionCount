@@ -24,20 +24,22 @@ def _load_counter_map():
 
     # Make sure the backend package root is on sys.path
     backend_dir = os.path.dirname(os.path.abspath(__file__))
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
+    root_dir    = os.path.dirname(backend_dir)
+    for p in (backend_dir, root_dir):
+        if p not in sys.path:
+            sys.path.insert(0, p)
 
-    from counters.SquatCounter        import SquatCounter
-    from counters.PushupCounter       import PushupCounter
-    from counters.BicepCurlCounter    import BicepCurlCounter
-    from counters.PullupCounter       import PullupCounter
-    from counters.LateralRaiseCounter import LateralRaiseCounter
-    from counters.OverheadPressCounter import OverheadPressCounter
-    from counters.SitupCounter        import SitupCounter
-    from counters.CrunchCounter       import CrunchCounter
-    from counters.LegRaiseCounter     import LegRaiseCounter
-    from counters.KneeRaiseCounter    import KneeRaiseCounter
-    from counters.KneePressCounter    import KneePressCounter
+    from backend.counters.SquatCounter         import SquatCounter
+    from backend.counters.PushupCounter        import PushupCounter
+    from backend.counters.BicepCurlCounter     import BicepCurlCounter
+    from backend.counters.PullupCounter        import PullupCounter
+    from backend.counters.LateralRaiseCounter  import LateralRaiseCounter
+    from backend.counters.OverheadPressCounter import OverheadPressCounter
+    from backend.counters.SitupCounter         import SitupCounter
+    from backend.counters.CrunchCounter        import CrunchCounter
+    from backend.counters.LegRaiseCounter      import LegRaiseCounter
+    from backend.counters.KneeRaiseCounter     import KneeRaiseCounter
+    from backend.counters.KneePressCounter     import KneePressCounter
 
     _COUNTER_MAP = {
         "squat":          SquatCounter,
@@ -64,8 +66,14 @@ class SessionData:
         # 30-FPS debounce
         self.last_process_time: float = 0.0
 
-        # Last known result (returned on skipped frames)
-        self.last_result: dict = {"count": 0, "angle": None, "stage": None, "keypoints": None}
+        # Last known result (returned on skipped frames) — keys match BaseCounter output
+        self.last_result: dict = {
+            "counter":      0,
+            "feedback":     "Get in Position",
+            "progress":     0.0,
+            "correct_form": False,
+            "keypoints":    None,
+        }
 
 
 class SessionManager:
@@ -75,7 +83,7 @@ class SessionManager:
     Usage
     -----
     mgr = SessionManager.instance()
-    sid = mgr.create("squat", detector)
+    sid = mgr.create("squat")
     data = mgr.get(sid)
     mgr.reset(sid)
     mgr.destroy(sid)
@@ -94,12 +102,15 @@ class SessionManager:
 
     # ------------------------------------------------------------------
 
-    def create(self, exercise: str, detector) -> str:
+    def create(self, exercise: str) -> str:
         """
-        Create a new session for *exercise* using *detector*.
+        Create a new session for *exercise*.
 
         Returns the new session_id (UUID string).
         Raises ValueError for unknown exercise slugs.
+
+        NOTE: BaseCounter initialises its own PoseDetectorModified internally;
+              no external detector needs to be passed in.
         """
         _load_counter_map()
         CounterClass = _COUNTER_MAP.get(exercise)
@@ -108,7 +119,7 @@ class SessionManager:
                 f"Unknown exercise {exercise!r}. "
                 f"Valid options: {sorted(_COUNTER_MAP)}"
             )
-        counter   = CounterClass(pose_detector=detector)
+        counter    = CounterClass()          # no pose_detector argument
         session_id = str(uuid.uuid4())
         self._sessions[session_id] = SessionData(counter, exercise)
         return session_id
@@ -121,7 +132,13 @@ class SessionManager:
         """Reset the counter for *session_id*."""
         data = self._sessions[session_id]
         data.counter.reset()
-        data.last_result = {"count": 0, "angle": None, "stage": None, "keypoints": None}
+        data.last_result = {
+            "counter":      0,
+            "feedback":     "Get in Position",
+            "progress":     0.0,
+            "correct_form": False,
+            "keypoints":    None,
+        }
 
     def destroy(self, session_id: str) -> None:
         """Remove session (call on WebSocket disconnect)."""

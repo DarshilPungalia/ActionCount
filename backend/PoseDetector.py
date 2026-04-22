@@ -1,159 +1,199 @@
-"""
-PoseDetector.py
----------------
-Wraps RTMPose (via rtmlib) for keypoint inference.
-No counting logic lives here.
-"""
-
-import math
 import cv2
 import numpy as np
-from rtmlib import Wholebody
 
-
-# COCO-17 skeleton connectivity pairs for visualisation
-COCO_SKELETON = [
-    (0, 1), (0, 2), (1, 3), (2, 4),          # head
-    (5, 6),                                    # shoulders
-    (5, 7), (7, 9),                            # left arm
-    (6, 8), (8, 10),                           # right arm
-    (5, 11), (6, 12),                          # torso
-    (11, 12),                                  # hips
-    (11, 13), (13, 15),                        # left leg
-    (12, 14), (14, 16),                        # right leg
+# COCO-17 skeleton connections for visualisation 
+# Each tuple is (joint_a_idx, joint_b_idx)
+_COCO_SKELETON = [
+    (0, 1), (0, 2), (1, 3), (2, 4),       # head
+    (5, 6),                                 # shoulder–shoulder
+    (5, 7), (7, 9),                         # left arm
+    (6, 8), (8, 10),                        # right arm
+    (5, 11), (6, 12),                       # torso sides
+    (11, 12),                               # hip–hip
+    (11, 13), (13, 15),                     # left leg
+    (12, 14), (14, 16),                     # right leg
 ]
 
-# Valid mode values passed through to rtmlib.Wholebody
-# "lightweight" -> rtmpose-t  |  "balanced" -> rtmpose-s  |  "performance" -> rtmpose-m
-_VALID_MODES = {"lightweight", "balanced", "performance"}
+_CONF_THRESHOLD    = 0.5   
+_MAX_INFERENCE_DIM = 640   
 
 
-class PoseDetector:
-    """Thin wrapper around rtmlib.Wholebody for single-person pose estimation."""
+class PoseDetectorModified:
+    """
+    Pose detector backed by RTMPose via rtmlib.Wholebody.
 
-    def __init__(self, mode: str = "balanced", backend: str = "onnxruntime", device: str = "cpu"):
+    The public API is identical to the old MediaPipe version so every
+    exercise counter and app.py can keep working without changes:
+
+        findPose(img, draw=True)
+            Run RTMPose inference on the frame; optionally draw the COCO-17
+            skeleton.  Stores keypoints internally.  Returns the (annotated) img.
+
+        findPosition(img, draw=False)
+            Return [[id, cx, cy, score], …] for all 17 COCO keypoints.
+            score is the raw RTMPose confidence (0–1).  Keypoints with
+            score < 0.5 are kept in the list but flagged — findAngle will
+            skip them automatically.
+
+        findAngle(img, p1, p2, p3, landmarks_list, draw=True)
+            Dot-product angle at joint p2; returns None when any of the three
+            keypoints is low-confidence or the vectors degenerate.
+    """
+
+    def __init__(self, mode: str = "balanced",
+                 backend: str = "onnxruntime",
+                 device: str = "cpu"):
         """
-        Parameters
-        ----------
-        mode    : "lightweight" | "balanced" | "performance"
-        backend : "onnxruntime" | "openvino" | ...
-        device  : "cpu" | "cuda"
+        Args:
+            mode    : "lightweight" | "balanced" | "performance"
+            backend : "onnxruntime" | "opencv"
+            device  : "cpu" | "cuda"
         """
-        if mode not in _VALID_MODES:
-            mode = "balanced"
-        self.model = Wholebody(
-            mode=mode,
-            backend=backend,
-            device=device,
-        )
-        self.conf_threshold = 0.5
+        from rtmlib import Wholebody  
+        self._model     = Wholebody(mode=mode, backend=backend, device=device)
+        self._keypoints = None   
+        self._scores    = None      
 
-        # State filled by findPose(), consumed by findPosition()
-        self._raw_keypoints = None
-        self._scores = None
-        self._scale_factor = 1.0
-
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────────
     # Public API
-    # ------------------------------------------------------------------
+    # ──────────────────────────────────────────────────────────────────────────
 
-    def findPose(self, frame: np.ndarray) -> np.ndarray:
+    def findPose(self, img: np.ndarray, draw: bool = True) -> np.ndarray:
         """
-        Run inference on *frame*.
+        Run RTMPose on img.  Stores first-person keypoints internally.
 
-        Resizes internally if either dimension > 640 px so the model
-        stays fast, but always returns the ORIGINAL frame unchanged.
+        Frames wider/taller than 640 px are downscaled for inference and the
+        keypoints are scaled back to original pixel coordinates before storage.
         """
-        h, w = frame.shape[:2]
-        if max(h, w) > 640:
-            scale = min(640 / w, 640 / h)
-            resized = cv2.resize(frame, (int(w * scale), int(h * scale)))
-            self._scale_factor = scale
+        h, w = img.shape[:2]
+
+        # ── Downscale for inference if needed ─────────────────────────────────
+        scale = min(1.0, _MAX_INFERENCE_DIM / max(h, w))
+        if scale < 1.0:
+            infer_img = cv2.resize(img, (int(w * scale), int(h * scale)))
         else:
-            resized = frame
-            self._scale_factor = 1.0
+            infer_img = img
 
-        result = self.model(resized)
+        # Returns: keypoints (N, 17, 2), scores (N, 17)
+        keypoints, scores = self._model(infer_img)
 
-        # rtmlib may return (keypoints, scores) or a dict — handle both
-        if isinstance(result, (tuple, list)) and len(result) == 2:
-            self._raw_keypoints, self._scores = result
-        else:
-            self._raw_keypoints = None
-            self._scores = None
+        if keypoints is None or len(keypoints) == 0:
+            self._keypoints = None
+            self._scores    = None
+            return img
 
-        return frame  # original frame, untouched
+        kps = keypoints[0].astype(np.float32).copy()   
+        scr = scores[0].astype(np.float32).copy()       
 
-    def findPosition(self, frame: np.ndarray) -> "np.ndarray | None":
+        if scale < 1.0:
+            kps /= scale  
+
+        # Filter low-confidence keypoint 
+        for i in range(len(scr)):
+            if scr[i] < _CONF_THRESHOLD:
+                kps[i] = [0.0, 0.0]
+
+        self._keypoints = kps
+        self._scores    = scr
+
+        if draw:
+            self._draw_skeleton(img, kps, scr)
+
+        return img
+
+    def findPosition(self, img: np.ndarray, draw: bool = False) -> list:
         """
-        Convert raw inference output to scaled COCO-17 keypoint array.
+        Return [[id, cx, cy, score], …] for all 17 COCO keypoints.
 
-        RTMPose Wholebody returns 133 keypoints; the first 17 are the
-        standard COCO-17 body joints used by all counters.
-
-        Returns None if no person was detected.
+        The 4th element (score) is read by findAngle to skip low-confidence
+        joints — no manual filtering needed by the caller.
         """
-        if self._raw_keypoints is None or len(self._raw_keypoints) == 0:
-            return None
+        landmarks_list = []
+        if self._keypoints is None:
+            return landmarks_list
 
-        # Take the first 17 COCO-17 body keypoints only
-        kps  = np.array(self._raw_keypoints[0][:17], dtype=float)   # (17, 2)
-        conf = np.array(self._scores[0][:17],         dtype=float)   # (17,)
+        for idx, (pt, score) in enumerate(zip(self._keypoints, self._scores)):
+            cx, cy = int(pt[0]), int(pt[1])
+            landmarks_list.append([idx, cx, cy, float(score)])
+            if draw and score >= _CONF_THRESHOLD:
+                cv2.circle(img, (cx, cy), 5, (255, 0, 0), cv2.FILLED)
 
-        # Zero out low-confidence keypoints
-        low_conf_mask = conf < self.conf_threshold
-        kps[low_conf_mask] = [0.0, 0.0]
+        return landmarks_list
 
-        # Scale back to original frame resolution
-        kps = kps / self._scale_factor
-
-        return kps
-
-    def findAngle(self, kps: np.ndarray, idx_a: int, idx_b: int, idx_c: int) -> "float | None":
+    def findAngle(self, img: np.ndarray,
+                  p1: int, p2: int, p3: int,
+                  landmarks_list: list,
+                  draw: bool = True):
         """
-        Compute the interior angle at vertex *idx_b* (degrees).
+        Dot-product angle at joint p2, between vectors p1→p2 and p3→p2.
 
-        Returns None if any of the three points is missing ([0,0] or NaN).
+        Returns None if:
+          • any of the three keypoints has confidence < 0.5
+          • either vector has zero magnitude (overlapping or zeroed keypoints)
         """
-        a, b, c = kps[idx_a], kps[idx_b], kps[idx_c]
-
-        # Reject zeroed / NaN points
-        for pt in (a, b, c):
-            if np.any(np.isnan(pt)) or (pt[0] == 0 and pt[1] == 0):
+        # Reject low-confidence joints
+        for p in (p1, p2, p3):
+            if len(landmarks_list[p]) >= 4 and landmarks_list[p][3] < _CONF_THRESHOLD:
                 return None
 
-        ba = a - b
-        bc = c - b
+        x1, y1 = landmarks_list[p1][1], landmarks_list[p1][2]
+        x2, y2 = landmarks_list[p2][1], landmarks_list[p2][2]
+        x3, y3 = landmarks_list[p3][1], landmarks_list[p3][2]
 
-        norm_ba = np.linalg.norm(ba)
-        norm_bc = np.linalg.norm(bc)
-        if norm_ba == 0 or norm_bc == 0:
+        ba = np.array([x1 - x2, y1 - y2], dtype=np.float64)
+        bc = np.array([x3 - x2, y3 - y2], dtype=np.float64)
+
+        if np.any(np.isnan(np.concatenate([ba, bc]))) \
+                or np.linalg.norm(ba) == 0 \
+                or np.linalg.norm(bc) == 0:
             return None
 
-        cosine = np.dot(ba, bc) / (norm_ba * norm_bc)
-        cosine = float(np.clip(cosine, -1.0, 1.0))
-        return math.degrees(math.acos(cosine))
+        cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+        cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+        angle = np.degrees(np.arccos(cosine_angle))
 
-    def _draw_skeleton(self, frame: np.ndarray, kps: np.ndarray) -> np.ndarray:
-        """
-        Draw keypoints and skeleton lines on *frame* (in-place copy).
-        Only draws points where x > 0 and y > 0.
-        """
-        frame = frame.copy()
+        if draw:
+            cv2.line(img, (x1, y1), (x2, y2), (255, 255, 255), 3)
+            cv2.line(img, (x3, y3), (x2, y2), (255, 255, 255), 3)
+            cv2.circle(img, (x1, y1), 10, (0, 0, 255), cv2.FILLED)
+            cv2.circle(img, (x1, y1), 15, (0, 0, 255), 2)
+            cv2.circle(img, (x2, y2), 10, (0, 0, 255), cv2.FILLED)
+            cv2.circle(img, (x2, y2), 15, (0, 0, 255), 2)
+            cv2.circle(img, (x3, y3), 10, (0, 0, 255), cv2.FILLED)
+            cv2.circle(img, (x3, y3), 15, (0, 0, 255), 2)
+            cv2.putText(img, str(int(angle)), (x2 - 50, y2 + 50),
+                        cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
 
-        # Draw limb connections first (so circles sit on top)
-        for i, j in COCO_SKELETON:
-            if i < len(kps) and j < len(kps):
-                xi, yi = int(kps[i][0]), int(kps[i][1])
-                xj, yj = int(kps[j][0]), int(kps[j][1])
-                if xi > 0 and yi > 0 and xj > 0 and yj > 0:
-                    cv2.line(frame, (xi, yi), (xj, yj), (0, 255, 255), 2, cv2.LINE_AA)
+        return angle
 
-        # Draw filled circles at each visible keypoint
-        for idx, (x, y) in enumerate(kps):
-            x, y = int(x), int(y)
-            if x > 0 and y > 0:
-                cv2.circle(frame, (x, y), 5, (0, 0, 255), cv2.FILLED)
-                cv2.circle(frame, (x, y), 5, (255, 255, 255), 1, cv2.LINE_AA)
+    def _draw_skeleton(self, img: np.ndarray,
+                       kps: np.ndarray, scores: np.ndarray):
+        """Draw COCO-17 bones and keypoint dots onto img in-place."""
+        for i, j in _COCO_SKELETON:
+            if scores[i] >= _CONF_THRESHOLD and scores[j] >= _CONF_THRESHOLD:
+                pt1 = (int(kps[i][0]), int(kps[i][1]))
+                pt2 = (int(kps[j][0]), int(kps[j][1]))
+                cv2.line(img, pt1, pt2, (0, 255, 0), 2)
 
-        return frame
+        for pt, score in zip(kps, scores):
+            if score >= _CONF_THRESHOLD:
+                cv2.circle(img, (int(pt[0]), int(pt[1])), 4, (0, 0, 255), cv2.FILLED)
+
+
+def main():
+    """Quick smoke-test: open webcam and show RTMPose skeleton."""
+    detector = PoseDetectorModified()
+    cap = cv2.VideoCapture(0)
+    while cap.isOpened():
+        ret, img = cap.read()
+        if ret:
+            img = detector.findPose(img, draw=True)
+            cv2.imshow("RTMPose", img)
+        if cv2.waitKey(10) & 0xFF == ord("q"):
+            break
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

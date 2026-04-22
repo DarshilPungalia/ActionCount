@@ -1,212 +1,340 @@
-"""
-BaseCounter.py
---------------
-Abstract base class that owns all rep-counting logic.
-Subclasses implement only _compute() with exercise-specific config.
-"""
-
 import time
-from abc import ABC, abstractmethod
-from collections import deque
-
 import cv2
 import numpy as np
-
-from PoseDetector import PoseDetector
+from abc import ABC, abstractmethod
+from collections import deque
+from backend.PoseDetector import PoseDetectorModified
 
 
 class BaseCounter(ABC):
     """
-    Abstract rep counter.
+    Abstract base class for all exercise counters.
 
-    Counting modes
-    --------------
-    "bilateral" — both limbs move together; average angle drives the state
-                  machine and a single counter increments per rep.
-    "per_limb"  — each leg/arm counted independently; counter increments
-                  each time either limb completes a rep.
+    The base class handles:
+      - MediaPipe pose detection and landmark extraction
+      - Stage-machine rep counting (up/down transitions with debounce)
+      - Angle smoothing (median filter + outlier rejection + 5-frame mean)
+      - CV2 overlay drawing (progress bar, rep counter, feedback badge)
+      - Thread-safe result packaging for Streamlit / WebRTC consumers
+
+    Subclasses implement only `_compute()`, returning:
+      (progress_pct: float, feedback: str, form_ok: bool)
     """
 
-    def __init__(self, pose_detector: PoseDetector, smoothing_window: int = 5):
-        self.detector         = pose_detector
-        self.counter          = 0
-        self.stage            = None                              # bilateral stage
-        self.leg_stages       = {"left": None, "right": None}    # per-limb stages
-        self.last_count_time  = 0.0
-        self.MIN_REP_TIME     = 0.5                               # seconds debounce
-        self._angle_history   = deque(maxlen=smoothing_window)
+    DEBOUNCE_SECONDS: float = 0.5
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+    def __init__(self):
+        self.pose_detector    = PoseDetectorModified(mode='lightweight')
+        self.counter          = 0.0
+        self.correct_form     = False
+        self.exercise_feedback = "Get in Position"
+        self.progress_pct     = 0.0
 
-    def reset(self) -> None:
-        """Reset counter and all internal state."""
-        self.counter         = 0
-        self.stage           = None
-        self.leg_stages      = {"left": None, "right": None}
-        self._angle_history.clear()
-        self.last_count_time = 0.0
+        # Stage-machine state
+        self.stage       = None         # bilateral  ("up" | "down" | None)
+        self.left_stage  = None         # per-limb left
+        self.right_stage = None         # per-limb right
+
+        # Debounce
+        self._last_count_time: float = 0.0
+
+        # Smoothing deques  {side: deque([raw_angles], maxlen=5)}
+        self._angle_deques: dict = {
+            "left":  deque(maxlen=5),
+            "right": deque(maxlen=5),
+        }
+
+        # Legacy attribute kept for backward-compat (not used in new counters)
+        self.movement_dir = 0
+
+    def reset(self):
+        """Reset all counter state back to defaults."""
+        self.counter           = 0.0
+        self.movement_dir      = 0
+        self.correct_form      = False
+        self.exercise_feedback = "Get in Position"
+        self.progress_pct      = 0.0
+        self.stage             = None
+        self.left_stage        = None
+        self.right_stage       = None
+        self._last_count_time  = 0.0
+        self._angle_deques     = {"left": deque(maxlen=5), "right": deque(maxlen=5)}
 
     def process_frame(self, frame: np.ndarray) -> dict:
         """
-        Main entry point — call once per video frame.
+        Process a single BGR video frame and return annotated results.
 
-        Returns a result dict (see _make_result for schema).
+        Args:
+            frame: BGR image as a numpy array (from OpenCV or av.VideoFrame).
+
+        Returns:
+            dict with keys:
+                frame       — annotated BGR numpy array
+                counter     — integer rep count
+                feedback    — "Up" | "Down" | "Fix Form" | "Get in Position"
+                progress    — float 0-100
+                correct_form — bool
         """
-        self.detector.findPose(frame)
-        kps = self.detector.findPosition(frame)
-        if kps is None:
-            return self._make_result(frame, angle=None)
-        return self._compute(frame, kps)
+        if frame is None:
+            return self._make_result(frame)
 
-    # ------------------------------------------------------------------
-    # Smoothing
-    # ------------------------------------------------------------------
+        frame = self.pose_detector.findPose(frame, draw=True)
+        landmarks_list = self.pose_detector.findPosition(frame, draw=False)
 
-    def _smooth_angle(self, angle: "float | None") -> "float | None":
+        if landmarks_list:
+            try:
+                progress_pct, feedback, form_ok = self._compute(frame, landmarks_list)
+                self.progress_pct      = float(np.clip(progress_pct, 0.0, 100.0))
+                self.exercise_feedback = feedback
+
+                if form_ok:
+                    self.correct_form = True
+
+                self._draw_overlays(frame, self.progress_pct)
+
+            except (IndexError, ValueError, ZeroDivisionError, TypeError):
+                # Landmarks partially out of frame or None angle
+                pass
+
+        return self._make_result(frame)
+
+    def _smooth_angle(self, side: str, raw_angle) -> float:
         """
-        Median-±2σ filter over the rolling angle history.
+        Smooth a raw joint angle using (plan §3):
+          1. Append new angle to the deque
+          2. Compute median and std of the deque
+          3. Remove values more than 2 std-devs from the median
+          4. Return mean of remaining values
 
-        With fewer than 3 values the raw angle is returned as-is.
+        Special cases:
+          - raw_angle is None  → return None so the caller can skip the frame
+          - deque has < 3 values → return the raw_angle unchanged (not enough
+            history to filter reliably)
+
+        Args:
+            side:      "left" or "right"
+            raw_angle: freshly computed angle in degrees, or None
+
+        Returns:
+            Smoothed angle in degrees, or None if raw_angle is None.
         """
-        if angle is None:
+        if raw_angle is None:
             return None
-        self._angle_history.append(angle)
-        if len(self._angle_history) < 3:
-            return angle
 
-        arr    = np.array(self._angle_history, dtype=float)
-        median = np.median(arr)
-        std    = np.std(arr)
-        mask   = np.abs(arr - median) <= 2 * std
-        kept   = arr[mask]
-        return float(np.mean(kept)) if len(kept) > 0 else angle
+        dq = self._angle_deques[side]
+        dq.append(float(raw_angle))
 
-    # ------------------------------------------------------------------
-    # Debounce helpers
-    # ------------------------------------------------------------------
+        # Not enough history — return raw value unchanged (plan §3)
+        if len(dq) < 3:
+            return float(raw_angle)
 
-    def _active_per_limb(self) -> bool:
-        """True when the cooldown period has elapsed (per-limb gate)."""
-        return time.time() - self.last_count_time >= self.MIN_REP_TIME
+        vals = np.array(list(dq), dtype=np.float64)
+        median = np.median(vals)
+        std    = np.std(vals)
+        if std > 0:
+            filtered = vals[np.abs(vals - median) <= 2 * std]
+        else:
+            filtered = vals
+
+        return float(np.mean(filtered)) if len(filtered) > 0 else float(median)
+
+    def _avg_angles(self, left_raw, right_raw):
+        """
+        Smooth both sides and return their bilateral average.
+        Returns None if either side is uncomputable (low-confidence / occluded).
+        Plan §6: callers should early-return and skip the frame when None.
+        """
+        left  = self._smooth_angle("left",  left_raw)
+        right = self._smooth_angle("right", right_raw)
+        if left is None or right is None:
+            return None
+        return (left + right) / 2.0
+
+    def _active_per_limb(self, left_raw, right_raw):
+        """
+        Smooth both sides for per-limb counters.
+        Returns (left_angle, right_angle) where either may be None.
+        The tick helpers already handle None silently, so callers only need
+        to guard the progress-bar / active_angle calculation.
+        """
+        return (
+            self._smooth_angle("left",  left_raw),
+            self._smooth_angle("right", right_raw),
+        )
 
     def _debounced_increment(self) -> bool:
         """
-        Increment counter only when cooldown has elapsed.
-
-        Returns True if the counter was incremented, False otherwise.
+        Increment self.counter by 1 only if ≥ DEBOUNCE_SECONDS have elapsed
+        since the last count.  Returns True if the count was incremented.
         """
-        if time.time() - self.last_count_time < self.MIN_REP_TIME:
-            return False
-        self.counter        += 1
-        self.last_count_time = time.time()
-        return True
-
-    # ------------------------------------------------------------------
-    # Stage machines
-    # ------------------------------------------------------------------
-
-    def _tick_bilateral(self, smoothed: float, up_angle: float, down_angle: float) -> None:
-        """
-        Two-stage (up / down) state machine for bilateral exercises.
-
-        Works for both normal  (up_angle > down_angle, e.g. squats)
-        and inverted (up_angle < down_angle, e.g. bicep curls) because
-        the UP_ANGLE / DOWN_ANGLE configs already encode the direction.
-        """
-        if smoothed > up_angle:
-            self.stage = "up"
-        elif smoothed < down_angle and self.stage == "up":
-            if self._debounced_increment():
-                self.stage = "down"
-
-    def _tick_per_limb(self, left_angle: float, right_angle: float,
-                       up_angle: float, down_angle: float) -> None:
-        """Drive per-limb state machines for both sides."""
-        self._tick_one("left",  left_angle,  up_angle, down_angle)
-        self._tick_one("right", right_angle, up_angle, down_angle)
-
-    def _tick_one(self, side: str, angle: float, up_angle: float, down_angle: float) -> None:
-        """Single-side state machine used by _tick_per_limb."""
-        if angle > up_angle:
-            self.leg_stages[side] = "up"
-        elif angle < down_angle and self.leg_stages[side] == "up" and self._active_per_limb():
+        now = time.monotonic()
+        if now - self._last_count_time >= self.DEBOUNCE_SECONDS:
             self.counter         += 1
-            self.last_count_time  = time.time()
-            self.leg_stages[side] = "down"
+            self._last_count_time = now
+            return True
+        return False
 
-    # ------------------------------------------------------------------
-    # Unified update dispatcher
-    # ------------------------------------------------------------------
-
-    def _update_count(self, left_angle: float, right_angle: float,
-                      up_angle: float, down_angle: float, mode: str) -> "float | None":
+    def _tick_bilateral(
+        self,
+        angle,
+        up_angle: float,
+        down_angle: float,
+        inverted: bool = False,
+    ) -> bool:
         """
-        Route to the correct counting strategy and return the display angle.
+        Advance the bilateral stage machine and count reps.
 
-        Parameters
-        ----------
-        mode : "bilateral" | "per_limb"
+        Normal  (inverted=False):
+            stage='up'   when angle > up_angle
+            stage='down' (+ count) when angle < down_angle AND stage was 'up'
+
+        Inverted (inverted=True):
+            stage='up'   when angle < up_angle   (e.g. fully curled)
+            stage='down' (+ count) when angle > down_angle AND stage was 'up'
+
+        Returns True if a rep was just counted, False otherwise.
+        Returns False immediately if angle is None (low-confidence keypoint).
         """
-        if mode == "bilateral":
-            avg      = (left_angle + right_angle) / 2.0
-            smoothed = self._smooth_angle(avg)
-            if smoothed is not None:
-                self._tick_bilateral(smoothed, up_angle, down_angle)
-            return smoothed
+        if angle is None:
+            return False
 
-        if mode == "per_limb":
-            self._tick_per_limb(left_angle, right_angle, up_angle, down_angle)
-            return (left_angle + right_angle) / 2.0
+        if not inverted:
+            if angle > up_angle:
+                self.stage = "up"
+            elif angle < down_angle and self.stage == "up":
+                self.stage = "down"
+                return self._debounced_increment()
+        else:
+            if angle < up_angle:
+                self.stage = "up"
+            elif angle > down_angle and self.stage == "up":
+                self.stage = "down"
+                return self._debounced_increment()
+        return False
 
-        raise ValueError(f"Unknown mode: {mode!r}. Expected 'bilateral' or 'per_limb'.")
+    def _tick_per_limb(
+        self,
+        left_angle,
+        right_angle,
+        up_angle: float,
+        down_angle: float,
+        inverted: bool = False,
+    ) -> int:
+        """
+        Advance independent left & right stage machines.
+        Each completed cycle increments the shared counter.
+        None angles are silently skipped (low-confidence keypoint).
 
-    # ------------------------------------------------------------------
-    # Rendering helpers
-    # ------------------------------------------------------------------
+        Returns the number of reps counted this frame (0, 1, or 2).
+        """
+        counted = 0
 
-    def _draw_overlays(self, frame: np.ndarray, angle: "float | None") -> np.ndarray:
-        """Render HUD (rep count + current angle) onto *frame*."""
-        # Semi-transparent HUD background
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (240, 80), (0, 0, 0), cv2.FILLED)
-        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
+        def _tick_one(angle, current_stage):
+            nonlocal counted
+            if angle is None:
+                return current_stage   # skip — bad keypoint
+            if not inverted:
+                if angle > up_angle:
+                    return "up"
+                elif angle < down_angle and current_stage == "up":
+                    if self._debounced_increment():
+                        counted += 1
+                    return "down"
+            else:
+                if angle < up_angle:
+                    return "up"
+                elif angle > down_angle and current_stage == "up":
+                    if self._debounced_increment():
+                        counted += 1
+                    return "down"
+            return current_stage
 
-        font       = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.8
-        thickness  = 2
-        color      = (255, 255, 255)
+        self.left_stage  = _tick_one(left_angle,  self.left_stage)
+        self.right_stage = _tick_one(right_angle, self.right_stage)
+        return counted
 
-        cv2.putText(frame, f"Reps  : {self.counter}", (10, 30),
-                    font, font_scale, color, thickness, cv2.LINE_AA)
-        if angle is not None:
-            cv2.putText(frame, f"Angle : {int(angle)}", (10, 65),
-                        font, font_scale, color, thickness, cv2.LINE_AA)
-        return frame
+    def _update_count(self, progress_pct: float):
+        """
+        Legacy generic half-rep counting.
+        A full rep = progress crossing 98% then dropping below 2%.
+        Not used by the new state-machine counters.
+        """
+        if progress_pct >= 98 and self.movement_dir == 0:
+            self.counter      += 0.5
+            self.movement_dir  = 1
+        elif progress_pct <= 2 and self.movement_dir == 1:
+            self.counter      += 0.5
+            self.movement_dir  = 0
 
-    def _make_result(self, frame: np.ndarray, angle: "float | None") -> dict:
-        """Build the standard result dict returned by process_frame."""
+    def _draw_overlays(self, frame: np.ndarray, progress_pct: float):
+        """Draw the progress bar, rep counter box, and feedback badge onto frame."""
+        h, w = frame.shape[:2]
+
+        # ── Progress bar (right edge) ─────────────────────────────────────────
+        if self.correct_form:
+            bx1, bx2 = w - 50, w - 25
+            bt, bb   = 60, h - 80
+            filled   = int(np.interp(progress_pct, (0, 100), (bb, bt)))
+
+            # Track background
+            cv2.rectangle(frame, (bx1, bt), (bx2, bb), (30, 30, 40), cv2.FILLED)
+            # Filled bar (colour interpolated green→red)
+            fill_g = int(np.interp(progress_pct, (0, 100), (80, 255)))
+            fill_r = int(np.interp(progress_pct, (0, 100), (200, 0)))
+            cv2.rectangle(frame, (bx1, filled), (bx2, bb), (fill_r, fill_g, 80), cv2.FILLED)
+            # Border
+            cv2.rectangle(frame, (bx1, bt), (bx2, bb), (180, 180, 200), 1)
+            # Percentage label
+            cv2.putText(frame, f'{int(progress_pct)}%',
+                        (bx1 - 8, bb + 22),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (190, 190, 200), 1)
+
+        # ── Rep counter (bottom-left box) ─────────────────────────────────────
+        cv2.rectangle(frame, (0, h - 105), (135, h), (18, 18, 28), cv2.FILLED)
+        cv2.rectangle(frame, (0, h - 105), (135, h), (60, 60, 90), 2)
+        cv2.putText(frame, "REPS",
+                    (10, h - 82),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 170), 1)
+        cv2.putText(frame, str(int(self.counter)),
+                    (12, h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 255, 130), 5)
+
+        # ── Feedback badge (top-left) ─────────────────────────────────────────
+        badge_colours = {
+            "Up":               (0, 230, 118),
+            "Down":             (0, 170, 255),
+            "Fix Form":         (0, 80,  255),
+            "Get in Position":  (180, 180, 180),
+        }
+        fb_col = badge_colours.get(self.exercise_feedback, (180, 180, 180))
+        cv2.rectangle(frame, (0, 0), (235, 50), (18, 18, 28), cv2.FILLED)
+        cv2.rectangle(frame, (0, 0), (235, 50), fb_col, 2)
+        cv2.putText(frame, self.exercise_feedback,
+                    (10, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.95, fb_col, 2)
+
+    def _make_result(self, frame) -> dict:
         return {
-            "frame": frame,
-            "count": self.counter,
-            "angle": angle,
-            "stage": self.stage,
+            "frame":        frame,
+            "counter":      int(self.counter),
+            "feedback":     self.exercise_feedback,
+            "progress":     self.progress_pct,
+            "correct_form": self.correct_form,
         }
 
-    # ------------------------------------------------------------------
-    # Abstract method — subclasses must implement
-    # ------------------------------------------------------------------
-
     @abstractmethod
-    def _compute(self, frame: np.ndarray, kps: np.ndarray) -> dict:
+    def _compute(self, frame: np.ndarray, landmarks_list: list) -> tuple:
         """
-        Compute angles, update count, draw overlays, return _make_result().
+        Exercise-specific angle analysis and state-machine tick.
 
-        Parameters
-        ----------
-        frame : raw BGR frame (original resolution)
-        kps   : (17, 2) COCO-17 keypoint array from PoseDetector.findPosition()
+        Args:
+            frame:          BGR image (may draw additional lines/circles on it).
+            landmarks_list: List of [id, cx, cy] from PoseDetectorModified.
+
+        Returns:
+            Tuple of:
+              progress_pct (float) — 0–100 for the UI progress bar
+              feedback     (str)   — "Up" | "Down" | "Fix Form" | "Get in Position"
+              form_ok      (bool)  — True if current frame has valid starting form
         """
-
-
+        ...

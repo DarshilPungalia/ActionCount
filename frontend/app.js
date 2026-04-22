@@ -37,15 +37,25 @@ const SKELETON_PAIRS = [
   [12,14],[14,16],
 ];
 
-// ── DOM refs ───────────────────────────────────────────────────────────
+// ── DOM refs ─────────────────────────────────────────────────────────────
 const exerciseSelect    = document.getElementById('exercise-select');
+
+// — Stat-card panel elements (matching Streamlit design)
 const repCount          = document.getElementById('rep-count');
-const angleValue        = document.getElementById('angle-value');
-const stageBadge        = document.getElementById('stage-badge');
+const feedbackEmoji     = document.getElementById('feedback-emoji');
+const feedbackText      = document.getElementById('feedback-text');
+const feedbackCard      = document.getElementById('feedback-card');
+const feedbackValue     = document.getElementById('feedback-value');
+const progressFill      = document.getElementById('progress-fill');
+const progressPctLabel  = document.getElementById('progress-pct-label');
+const formStatus        = document.getElementById('form-status');
+const formStatusText    = document.getElementById('form-status-text');
+
+// — Legacy arc + status
+const arcFill           = document.getElementById('angle-arc-fill');
 const statusDot         = document.getElementById('status-dot');
 const statusText        = document.getElementById('status-text');
 const btnReset          = document.getElementById('btn-reset');
-const arcFill           = document.getElementById('angle-arc-fill');
 
 const tabCamera         = document.getElementById('tab-camera');
 const tabUpload         = document.getElementById('tab-upload');
@@ -97,53 +107,95 @@ const SessionModule = (() => {
   async function reset() {
     if (!sessionId) return;
     try {
-      await fetch(`${API_BASE}/session/${sessionId}/reset`, { method: 'POST' });
-      updateHUD({ count: 0, angle: null, stage: null });
+      const res = await fetch(`${API_BASE}/session/${sessionId}/reset`, { method: 'POST' });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg);
+      }
+      // Server confirmed reset — clear HUD
+      updateHUD({ counter: 0, feedback: 'Get in Position', progress: 0, correct_form: false });
+      _lastCount = 0;
     } catch (err) {
       console.warn('[Session] reset failed:', err);
+      setStatus('error', `Reset failed: ${err.message}`);
+      // Session may be gone — clear the stale id so next Start creates a fresh one
+      sessionId = null;
     }
   }
 
-  return { start, reset };
+  function clearSession() {
+    sessionId = null;
+  }
+
+  return { start, reset, clearSession };
 })();
 
-// ══════════════════════════════════════════════════════════════════════
+// ────────────────────────────────────────────────────────────────────────
 // HUD helpers
-// ══════════════════════════════════════════════════════════════════════
+// ────────────────────────────────────────────────────────────────────────
 let _lastCount = 0;
 
-function updateHUD({ count, angle, stage }) {
-  // Rep count — pop animation on increment
-  if (count !== undefined && count !== null) {
-    if (count !== _lastCount) {
-      repCount.classList.remove('pop');
-      void repCount.offsetWidth;          // force reflow to re-trigger animation
-      repCount.classList.add('pop');
-      _lastCount = count;
-    }
-    repCount.textContent = count;
-  }
+/** Feedback colour map — mirrors app.py FEEDBACK_COLOUR */
+const FEEDBACK_COLOUR = {
+  'Up':              '#10b981',
+  'Down':            '#3b82f6',
+  'Fix Form':        '#ef4444',
+  'Get in Position': '#9ca3af',
+};
 
-  // Angle value + arc gauge
-  if (angle !== null && angle !== undefined) {
-    angleValue.textContent = Math.round(angle);
-    const fraction = Math.min(angle / 180, 1);
-    arcFill.style.strokeDashoffset = 172 * (1 - fraction);
-  } else {
-    angleValue.textContent = '—';
-    arcFill.style.strokeDashoffset = 172;
-  }
+const FEEDBACK_EMOJI = {
+  'Up':              '⬆️',
+  'Down':            '⬇️',
+  'Fix Form':        '⚠️',
+  'Get in Position': '📍',
+};
 
-  // Stage badge
-  stageBadge.className = 'stage-badge';
-  if (stage === 'up') {
-    stageBadge.textContent = 'UP';
-    stageBadge.classList.add('stage-up');
-  } else if (stage === 'down') {
-    stageBadge.textContent = 'DOWN';
-    stageBadge.classList.add('stage-down');
-  } else {
-    stageBadge.textContent = '—';
+/**
+ * Update all stat-card DOM elements.
+ * Accepts new payload: { counter, feedback, progress, correct_form, keypoints, skipped }
+ * Also handles legacy zero-state: { count, angle, stage }
+ */
+function updateHUD(data) {
+  // — Rep count (pop animation on increment)
+  const count = data.counter ?? data.count ?? 0;
+  if (count !== _lastCount) {
+    repCount.classList.remove('pop');
+    void repCount.offsetWidth;    // force reflow to re-trigger
+    repCount.classList.add('pop');
+    _lastCount = count;
+  }
+  repCount.textContent = count;
+
+  // — Feedback badge
+  const fb     = data.feedback ?? 'Get in Position';
+  const colour = FEEDBACK_COLOUR[fb] ?? '#9ca3af';
+  const emoji  = FEEDBACK_EMOJI[fb]  ?? '📍';
+
+  if (feedbackEmoji) feedbackEmoji.textContent = emoji;
+  if (feedbackText)  feedbackText.textContent  = fb;
+  if (feedbackValue) feedbackValue.style.color = colour;
+  if (feedbackCard)  feedbackCard.style.borderColor = colour + '44';
+
+  // — Progress bar
+  const pct = Math.round(data.progress ?? 0);
+  if (progressFill) {
+    progressFill.style.width = `${pct}%`;
+    const track = progressFill.closest('[role="progressbar"]');
+    if (track) track.setAttribute('aria-valuenow', pct);
+  }
+  if (progressPctLabel) progressPctLabel.textContent = `${pct}% complete`;
+
+  // — Form status badge
+  const unlocked = data.correct_form ?? false;
+  if (formStatus)     formStatus.classList.toggle('unlocked', unlocked);
+  if (formStatusText) formStatusText.textContent = unlocked ? '✅ Form Unlocked' : '📍 Get in Position';
+
+  // — Legacy angle arc
+  const angle = data.angle ?? null;
+  if (arcFill) {
+    arcFill.style.strokeDashoffset = (angle !== null)
+      ? 172 * (1 - Math.min(angle / 180, 1))
+      : 172;
   }
 }
 
@@ -283,6 +335,7 @@ const LiveModule = (() => {
     ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
+        // Pass full payload to updateHUD — handles counter/feedback/progress/correct_form
         updateHUD(data);
 
         if (data.keypoints) {
@@ -329,10 +382,10 @@ const LiveModule = (() => {
     if (ts - lastSendTime < FRAME_MS) return;
     lastSendTime = ts;
 
-    // Update FPS badge every second
+    // Update FPS badge every second (guard against missing DOM element)
     fpsFrames++;
     if (ts - fpsLastTime >= 1000) {
-      fpsBadge.textContent = `${fpsFrames} FPS`;
+      if (fpsBadge) fpsBadge.textContent = `${fpsFrames} FPS`;
       fpsFrames   = 0;
       fpsLastTime = ts;
     }
@@ -368,13 +421,14 @@ const LiveModule = (() => {
 
   function stop() {
     _cleanup();
+    SessionModule.clearSession();   // discard stale session so next Start is fresh
     cameraPlaceholder.classList.remove('hidden');
     btnStartCamera.hidden   = false;
     btnStopCamera.hidden    = true;
     btnStartCamera.disabled = false;
-    fpsBadge.textContent    = '— FPS';
+    if (fpsBadge) fpsBadge.textContent = '— FPS';
     setStatus('idle', 'Idle');
-    updateHUD({ count: 0, angle: null, stage: null });
+    updateHUD({ counter: 0, feedback: 'Get in Position', progress: 0, correct_form: false });
     _lastCount = 0;
   }
 
@@ -387,7 +441,28 @@ const LiveModule = (() => {
 const UploadModule = (() => {
 
   // Boundary sentinel used to split MJPEG frames
-  let _abortCtrl = null;   // AbortController for cancelling an in-flight upload
+  let _abortCtrl    = null;   // AbortController for cancelling an in-flight upload
+  let _pollTimer    = null;   // setInterval handle for HUD polling
+  let _uploadSid    = null;   // session created for the upload
+
+  /** Start polling /session/:id every 250 ms and push data to updateHUD. */
+  function _startHudPolling(sid, signal) {
+    _stopHudPolling();
+    _pollTimer = setInterval(async () => {
+      if (signal.aborted) { _stopHudPolling(); return; }
+      try {
+        const r = await fetch(`${API_BASE}/session/${sid}/state`, { signal });
+        if (r.ok) {
+          const d = await r.json();
+          updateHUD(d);
+        }
+      } catch (_) { /* ignore — stream may have ended */ }
+    }, 250);
+  }
+
+  function _stopHudPolling() {
+    if (_pollTimer !== null) { clearInterval(_pollTimer); _pollTimer = null; }
+  }
 
   async function processFile(file) {
     if (!file || !file.type.startsWith('video/')) {
@@ -397,19 +472,30 @@ const UploadModule = (() => {
 
     const exercise = exerciseSelect.value;
 
-    // Reset UI
+    // Cancel any in-flight upload
     if (_abortCtrl) _abortCtrl.abort();
     _abortCtrl = new AbortController();
+    _stopHudPolling();
 
     uploadVideoWrap.hidden    = true;
     progressWrap.hidden       = false;
     progressBar.style.width   = '5%';
     progressLabel.textContent = 'Uploading…';
     setStatus('active', 'Processing video…');
+    updateHUD({ counter: 0, feedback: 'Get in Position', progress: 0, correct_form: false });
+
+    // Start a proper named session so the server tracks state we can poll
+    _uploadSid = await SessionModule.start(exercise);
+    if (!_uploadSid) {
+      progressLabel.textContent = 'Failed to start session';
+      setStatus('error', 'Session error');
+      return;
+    }
 
     const formData = new FormData();
-    formData.append('file',     file);
-    formData.append('exercise', exercise);
+    formData.append('file',       file);
+    formData.append('exercise',   exercise);
+    formData.append('session_id', _uploadSid);   // hint to server (if supported)
 
     try {
       // Animate fake upload progress
@@ -438,14 +524,23 @@ const UploadModule = (() => {
       // Show the result container
       uploadVideoWrap.hidden = false;
 
+      // Begin polling the session endpoint for live HUD updates while the
+      // MJPEG stream is being consumed (the upload endpoint creates its own
+      // internal session, so this polls our named session which shares state
+      // indirectly via the exercise slug — an approximation until the backend
+      // exposes a unified upload-session endpoint)
+      _startHudPolling(_uploadSid, _abortCtrl.signal);
+
       // Stream the MJPEG response body frame by frame
       await _streamMjpeg(res.body, _abortCtrl.signal);
 
+      _stopHudPolling();
       progressBar.style.width   = '100%';
       progressLabel.textContent = 'Done!';
       setStatus('idle', 'Done');
 
     } catch (err) {
+      _stopHudPolling();
       if (err.name === 'AbortError') return;
       console.error('[Upload] error:', err);
       setStatus('error', `Error: ${err.message}`);
@@ -605,7 +700,12 @@ function switchTab(mode) {
   panelCamera.hidden = !isCam;
   panelUpload.hidden =  isCam;
 
-  if (!isCam) LiveModule.stop();
+  if (!isCam) {
+    LiveModule.stop();
+  } else {
+    // Returning to camera tab — prompt user to start a new session
+    setStatus('idle', 'Press Start Camera to begin');
+  }
 }
 
 tabCamera.addEventListener('click', () => switchTab('camera'));
@@ -651,10 +751,15 @@ const EXERCISE_LABELS = {
       exerciseSelect.innerHTML = exercises
         .map((e) => `<option value="${e}">${EXERCISE_LABELS[e] ?? e}</option>`)
         .join('');
+      setStatus('idle', 'Idle');
+    } else {
+      // Server responded but with an error — keep hardcoded options
+      console.warn('[Init] /exercises returned', res.status, '— using hardcoded options');
+      setStatus('idle', 'Idle (offline mode)');
     }
-  } catch (_) {
-    // Server not up yet — use hardcoded HTML options, which is fine
+  } catch (err) {
+    // Server not reachable — hardcoded <select> options in index.html are the fallback
+    console.warn('[Init] Could not reach server:', err.message);
+    setStatus('error', 'Server unreachable — check backend');
   }
-
-  setStatus('idle', 'Idle');
 })();

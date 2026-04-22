@@ -258,7 +258,141 @@ select:focus {
   pointer-events: none;
 }
 
-/* ── Stats Card ────────────────────────────────────────────────────── */
+/* ── Stats Panel (Streamlit-style stat cards) ───────────────────────── */
+.stats-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* Individual stat card */
+.stat-card {
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--r-md);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color var(--tr-normal);
+}
+
+.stat-card:hover { border-color: rgba(99,102,241,0.35); }
+
+.stat-card--reps  { border-color: rgba(16,185,129,0.25); }
+
+.stat-card-label {
+  font-size: 0.70rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #6b7280;
+  margin-bottom: var(--sp-2);
+}
+
+/* Rep count number */
+.stat-card-value {
+  font-size: 3.5rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #10b981;
+  font-variant-numeric: tabular-nums;
+  transition: transform var(--tr-fast);
+}
+
+.stat-card-value.pop {
+  animation: statPop 0.35s ease;
+}
+
+@keyframes statPop {
+  0%   { transform: scale(1); }
+  50%  { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+
+/* Feedback display inside feedback card */
+.stat-card-feedback {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #9ca3af;          /* default — JS overrides with feedback colour */
+  transition: color var(--tr-normal);
+}
+
+/* Exercise progress track inside progress card */
+.progress-track {
+  height: 8px;
+  border-radius: var(--r-full);
+  background: rgba(255,255,255,0.06);
+  overflow: hidden;
+  margin-bottom: var(--sp-2);
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: var(--r-full);
+  background: linear-gradient(90deg, #6366f1, #10b981);
+  transition: width 0.25s ease;
+  box-shadow: 0 0 8px rgba(99,102,241,0.4);
+}
+
+.progress-pct-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  text-align: right;
+}
+
+/* Form status badge */
+.form-status {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-md);
+  background: rgba(99,102,241,0.08);
+  border: 1px solid rgba(99,102,241,0.2);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #9ca3af;
+  transition: background var(--tr-normal), border-color var(--tr-normal), color var(--tr-normal);
+}
+
+.form-status.unlocked {
+  background: rgba(16,185,129,0.1);
+  border-color: rgba(16,185,129,0.3);
+  color: #10b981;
+}
+
+.form-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4b5563;
+  flex-shrink: 0;
+  transition: background var(--tr-normal), box-shadow var(--tr-normal);
+}
+
+.form-status.unlocked .form-status-dot {
+  background: #10b981;
+  box-shadow: 0 0 6px rgba(16,185,129,0.6);
+}
+
+/* Angle arc */
+.angle-arc-wrap {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--sp-2);
+}
+
+.angle-arc {
+  width: 120px;
+  height: 70px;
+}
+
+/* ── Legacy stats grid (kept for backward compat) ───────────────────── */
 .stats-grid {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
@@ -284,16 +418,6 @@ select:focus {
   background-clip: text;
   line-height: 1;
   transition: transform var(--tr-fast);
-}
-
-.stat-value.pop {
-  animation: statPop 0.3s ease;
-}
-
-@keyframes statPop {
-  0%   { transform: scale(1); }
-  50%  { transform: scale(1.25); }
-  100% { transform: scale(1); }
 }
 
 .stat-label {
@@ -327,18 +451,6 @@ select:focus {
 .stage-badge.stage-down {
   background: hsla(245, 85%, 65%, 0.2);
   color: var(--clr-primary);
-}
-
-/* Angle arc */
-.angle-arc-wrap {
-  display: flex;
-  justify-content: center;
-  margin-top: var(--sp-2);
-}
-
-.angle-arc {
-  width: 120px;
-  height: 70px;
 }
 
 /* ── Buttons ───────────────────────────────────────────────────────── */
