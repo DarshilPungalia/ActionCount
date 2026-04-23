@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ActionCount — Body Metrics</title>
+  <meta name="description" content="Track your body weight and height over time with historical trend charts." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = { darkMode:'class', theme:{ extend:{ fontFamily:{ sans:['Inter','sans-serif'] } } } };
+  </script>
+  <style>
+    body { font-family:'Inter',sans-serif; background:radial-gradient(ellipse at 20% 10%,#0f172a 0%,#0a0e1a 60%,#050810 100%); min-height:100vh; color:#f1f5f9; }
+    @keyframes fadeInUp { from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)} }
+    .anim-up  { animation:fadeInUp 0.5s ease both; }
+    .d100{animation-delay:.1s}.d200{animation-delay:.2s}.d300{animation-delay:.3s}
+    .glass { background:rgba(255,255,255,0.04); backdrop-filter:blur(16px); border:1px solid rgba(255,255,255,0.08); border-radius:1rem; }
+    .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; }
+    .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
+    .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
+    .metric-input { width:100%; padding:10px 14px; border-radius:10px; border:1px solid rgba(255,255,255,0.1); background:rgba(255,255,255,0.05); color:#f1f5f9; font-size:0.9rem; outline:none; transition:border 0.15s; box-sizing:border-box; }
+    .metric-input:focus { border-color:rgba(99,102,241,0.5); }
+    .metric-label { font-size:0.78rem; color:#9ca3af; margin-bottom:6px; display:block; }
+    .save-btn { width:100%; padding:11px; border-radius:10px; background:linear-gradient(135deg,#6366f1,#4f46e5); color:#fff; border:none; font-weight:600; font-size:0.9rem; cursor:pointer; transition:all 0.2s; }
+    .save-btn:hover { filter:brightness(1.1); transform:translateY(-1px); box-shadow:0 6px 20px rgba(99,102,241,0.35); }
+    .save-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
+    .history-row { display:flex; justify-content:space-between; padding:8px 14px; border-radius:8px; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.06); margin-bottom:4px; }
+    #toast { position:fixed; bottom:24px; right:24px; z-index:9999; background:#10b981; color:#fff; padding:10px 18px; border-radius:12px; font-size:0.85rem; font-weight:600; opacity:0; transform:translateY(16px); transition:all 0.3s; pointer-events:none; }
+    #toast.show { opacity:1; transform:translateY(0); }
+  </style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="sticky top-0 z-40 border-b border-white/[0.06]" style="background:rgba(10,14,26,0.85);backdrop-filter:blur(20px);">
+  <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2">
+      <span class="text-2xl">🏋️</span>
+      <span class="font-extrabold text-white">ActionCount</span>
+    </a>
+    <div class="flex items-center gap-1">
+      <a href="/" class="nav-pill">Tracker</a>
+      <a href="/dashboard" class="nav-pill">Dashboard</a>
+      <a href="/chatbot" class="nav-pill">AI Coach</a>
+      <a href="/metrics" class="nav-pill active">Metrics</a>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="usernameTag" class="text-sm text-slate-400"></span>
+      <button onclick="Auth.logout()" class="text-slate-500 hover:text-red-400 text-sm transition-colors">Logout</button>
+    </div>
+  </div>
+</nav>
+
+<main class="max-w-5xl mx-auto px-4 py-8">
+
+  <!-- Header -->
+  <div class="mb-8 anim-up">
+    <h1 class="text-3xl font-extrabold text-white mb-1">📏 Body Metrics</h1>
+    <p class="text-slate-400 text-sm">Track your weight &amp; height over time</p>
+  </div>
+
+  <!-- Log form -->
+  <div class="glass p-6 mb-6 anim-up d100">
+    <h2 class="text-base font-bold text-white mb-4">➕ Log Metrics</h2>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div>
+        <label class="metric-label" for="metric-date">Date</label>
+        <input id="metric-date" type="date" class="metric-input" />
+      </div>
+      <div>
+        <label class="metric-label" for="metric-weight">Body Weight (kg)</label>
+        <input id="metric-weight" type="number" class="metric-input" min="0" max="500" step="0.1" placeholder="e.g. 72.5" />
+      </div>
+      <div>
+        <label class="metric-label" for="metric-height">Height (cm)</label>
+        <input id="metric-height" type="number" class="metric-input" min="0" max="300" step="0.1" placeholder="e.g. 175.0" />
+      </div>
+    </div>
+    <button id="save-metrics-btn" class="save-btn mt-4" onclick="saveMetrics()">💾 Save Metrics</button>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+    <div class="glass p-6 anim-up d200">
+      <h3 class="text-base font-bold text-white mb-1">⚖️ Weight Over Time</h3>
+      <p class="text-xs text-slate-500 mb-3">kg · dots = isolated entries, lines = consecutive days</p>
+      <div style="height:220px;">
+        <canvas id="weightChart"></canvas>
+      </div>
+      <p id="noWeightData" class="text-slate-500 text-sm text-center mt-3 hidden">No weight data logged yet.</p>
+    </div>
+    <div class="glass p-6 anim-up d300">
+      <h3 class="text-base font-bold text-white mb-1">📐 Height Over Time</h3>
+      <p class="text-xs text-slate-500 mb-3">cm · dots = isolated entries, lines = consecutive days</p>
+      <div style="height:220px;">
+        <canvas id="heightChart"></canvas>
+      </div>
+      <p id="noHeightData" class="text-slate-500 text-sm text-center mt-3 hidden">No height data logged yet.</p>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="glass p-6 anim-up d300" id="historySection" style="display:none;">
+    <h3 class="text-base font-bold text-white mb-4">📋 Full History</h3>
+    <div id="historyList"></div>
+  </div>
+
+</main>
+
+<div id="toast"></div>
+
+<script src="/static/js/api.js"></script>
+<script>
+(async function authGuard() {
+  if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+  try {
+    await apiFetch('/api/user/profile');
+    document.getElementById('usernameTag').textContent = Auth.username();
+  } catch (_) { clearToken(); window.location.href = '/login'; }
+})();
+</script>
+<script src="/static/js/metrics.js"></script>
+</body>
+</html>

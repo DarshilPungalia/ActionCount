@@ -83,6 +83,8 @@ from backend.utils.validation import (                        # noqa: E402
     UserProfile, UserProfileResponse,
     SaveWorkoutRequest, WorkoutHistoryResponse, WorkoutStatsResponse,
     DayWorkout, WorkoutEntry, MuscleGroupStat,
+    ExerciseVolume, VolumeResponse,
+    MetricLogRequest, MetricPoint, MetricsResponse,
     ChatRequest, ChatResponse, ChatMessage,
 )
 from backend.utils.chatbot import _get_response
@@ -186,6 +188,12 @@ async def serve_chatbot():
     return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
 
 
+@app.get("/metrics", response_class=HTMLResponse)
+async def serve_metrics():
+    p = FRONTEND_DIR / "metrics.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # API — AUTHENTICATION
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -251,9 +259,24 @@ async def save_profile(body: UserProfile, username: str = Depends(_get_current_u
 async def save_workout(body: SaveWorkoutRequest, username: str = Depends(_get_current_user)):
     """Save a completed set for today (or the supplied date)."""
     day_data = db.save_workout(
-        username, body.exercise, body.reps, body.sets, body.date
+        username, body.exercise, body.reps, body.sets, body.date, body.weight_kg
     )
     return {"status": "saved", "day": day_data}
+
+
+@app.get("/api/workout/volume", response_model=VolumeResponse)
+async def get_volume(
+    month: Optional[str] = None,
+    username: str = Depends(_get_current_user),
+):
+    """Return total volume (reps × weight_kg) per exercise for the given YYYY-MM month."""
+    year_month  = month or datetime.now().strftime("%Y-%m")
+    vol_data    = db.get_monthly_volume_by_exercise(username, year_month)
+    volumes = [
+        ExerciseVolume(exercise=ex, total_volume_kg=vol)
+        for ex, vol in sorted(vol_data.items(), key=lambda x: -x[1])
+    ]
+    return VolumeResponse(month=year_month, volumes=volumes)
 
 
 @app.get("/api/workout/history", response_model=WorkoutHistoryResponse)
@@ -264,13 +287,37 @@ async def get_history(username: str = Depends(_get_current_user)):
         DayWorkout(
             date=day,
             exercises={
-                ex: WorkoutEntry(sets=db._entry_sets_list(data))
+                ex: WorkoutEntry(
+                    sets=db._entry_sets_list(data),
+                    weights=db._entry_weights_list(data),
+                )
                 for ex, data in exercises.items()
             },
         )
         for day, exercises in sorted(raw.items())
     ]
     return WorkoutHistoryResponse(history=history)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — BODY METRICS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.post("/api/metrics/log", response_model=MetricPoint)
+async def log_metric(body: MetricLogRequest, username: str = Depends(_get_current_user)):
+    """Log body weight / height for a given date (must not be in the future)."""
+    try:
+        result = db.log_metric(username, body.date, body.weight_kg, body.height_cm)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return MetricPoint(**result)
+
+
+@app.get("/api/metrics", response_model=MetricsResponse)
+async def get_metrics(username: str = Depends(_get_current_user)):
+    """Retrieve all body metric entries for the user, sorted by date."""
+    data = db.get_metrics(username)
+    return MetricsResponse(metrics=[MetricPoint(**d) for d in data])
 
 
 @app.get("/api/workout/stats", response_model=WorkoutStatsResponse)

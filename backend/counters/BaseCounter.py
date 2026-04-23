@@ -267,10 +267,10 @@ class BaseCounter(ABC):
             self.movement_dir  = 0
 
     def _draw_overlays(self, frame: np.ndarray, progress_pct: float):
-        """Draw the progress bar, rep counter box, and feedback badge onto frame."""
+        """Draw the progress bar onto frame. Form feedback is shown in the UI, not on video."""
         h, w = frame.shape[:2]
 
-        # ── Progress bar (right edge) ─────────────────────────────────────────
+        # ── Progress bar (right edge) — only when form is correct ────────────
         if self.correct_form:
             bx1, bx2 = w - 50, w - 25
             bt, bb   = 60, h - 80
@@ -288,20 +288,6 @@ class BaseCounter(ABC):
             cv2.putText(frame, f'{int(progress_pct)}%',
                         (bx1 - 8, bb + 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (190, 190, 200), 1)
-
-        # ── Feedback badge (top-left) ─────────────────────────────────────────
-        badge_colours = {
-            "Up":               (0, 230, 118),
-            "Down":             (0, 170, 255),
-            "Fix Form":         (0, 80,  255),
-            "Get in Position":  (180, 180, 180),
-        }
-        fb_col = badge_colours.get(self.exercise_feedback, (180, 180, 180))
-        cv2.rectangle(frame, (0, 0), (235, 50), (18, 18, 28), cv2.FILLED)
-        cv2.rectangle(frame, (0, 0), (235, 50), fb_col, 2)
-        cv2.putText(frame, self.exercise_feedback,
-                    (10, 35),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.95, fb_col, 2)
 
     def _make_result(self, frame) -> dict:
         return {

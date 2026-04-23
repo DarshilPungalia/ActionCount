@@ -1,6 +1,6 @@
 """
-models.py
----------
+validation.py
+-------------
 Pydantic models for all ActionCount API request/response bodies.
 """
 
@@ -58,10 +58,12 @@ class SaveWorkoutRequest(BaseModel):
     reps: int = Field(..., ge=1)
     sets: int = Field(default=1, ge=1)
     date: Optional[str] = None  # ISO date string YYYY-MM-DD; defaults to today
+    weight_kg: Optional[float] = Field(default=None, ge=0, description="Weight used in kg (0 = bodyweight)")
 
 
 class WorkoutEntry(BaseModel):
-    sets: list[int]   # per-set rep counts e.g. [12, 10, 14]
+    sets: list[int]       # per-set rep counts e.g. [12, 10, 14]
+    weights: list[float] = Field(default_factory=list)  # per-set weights in kg
 
     @property
     def total_reps(self) -> int:
@@ -71,11 +73,17 @@ class WorkoutEntry(BaseModel):
     def total_sets(self) -> int:
         return len(self.sets)
 
+    @property
+    def total_volume(self) -> float:
+        """Total volume = sum(reps_i × weight_i) for all sets."""
+        w = list(self.weights) + [0.0] * max(0, len(self.sets) - len(self.weights))
+        return round(sum(r * wt for r, wt in zip(self.sets, w)), 2)
+
 
 class DayWorkout(BaseModel):
     """All exercises performed on a single day."""
     date: str                              # "YYYY-MM-DD"
-    exercises: dict[str, WorkoutEntry]     # {"Bicep Curl": {sets:[12,10]}}
+    exercises: dict[str, WorkoutEntry]     # {"Bicep Curl": {sets:[12,10], weights:[20,20]}}
 
 
 class WorkoutHistoryResponse(BaseModel):
@@ -90,6 +98,34 @@ class MuscleGroupStat(BaseModel):
 class WorkoutStatsResponse(BaseModel):
     month: str   # "YYYY-MM"
     stats: list[MuscleGroupStat]
+
+
+class ExerciseVolume(BaseModel):
+    exercise: str
+    total_volume_kg: float
+
+
+class VolumeResponse(BaseModel):
+    month: str
+    volumes: list[ExerciseVolume]
+
+
+# ── Body Metrics ──────────────────────────────────────────────────────────────
+
+class MetricLogRequest(BaseModel):
+    date: str = Field(..., description="ISO date YYYY-MM-DD, must not be in the future")
+    weight_kg: Optional[float] = Field(default=None, gt=0, lt=500)
+    height_cm: Optional[float] = Field(default=None, gt=0, lt=300)
+
+
+class MetricPoint(BaseModel):
+    date: str
+    weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+
+
+class MetricsResponse(BaseModel):
+    metrics: list[MetricPoint]
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────

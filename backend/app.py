@@ -172,6 +172,9 @@ def _init_state():
         "_upload_final_reps":   0,
         "_upload_exercise":     "",
         "_upload_completed_at": 0.0,
+        # Weight inputs
+        "_webcam_weight_kg":  0.0,
+        "_upload_weight_kg":  0.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -399,7 +402,7 @@ def render_sidebar():
 
         # Page navigation
         st.markdown("**Navigation**")
-        pages = {"🎯 Tracker": "tracker", "📊 Dashboard": "dashboard", "🤖 AI Coach": "chatbot"}
+        pages = {"🎯 Tracker": "tracker", "📊 Dashboard": "dashboard", "🤖 AI Coach": "chatbot", "📏 Metrics": "metrics"}
         for label, key in pages.items():
             active = st.session_state.page == key
             if st.button(label, use_container_width=True,
@@ -513,6 +516,15 @@ def _render_webcam(exercise_name):
     with stats_col:
         st.markdown("### 📊 Stats")
 
+        # Weight input for volume tracking
+        weight_kg = st.number_input(
+            "🏋️ Weight used (kg)", min_value=0.0, max_value=500.0,
+            value=st.session_state.get("_webcam_weight_kg", 0.0),
+            step=0.5, key="webcam_weight_input",
+            help="Enter 0 for bodyweight exercises"
+        )
+        st.session_state["_webcam_weight_kg"] = weight_kg
+
         # Save Set button at the TOP for quick access — no scrolling needed
         reps = int(st.session_state.counter_obj.counter) if st.session_state.counter_obj else 0
         _, display_name = EXERCISES[exercise_name]
@@ -521,9 +533,13 @@ def _render_webcam(exercise_name):
             <div class="stat-label">Reps This Session</div>
             <div class="stat-value">{reps}</div>
         </div>""", unsafe_allow_html=True)
+        if weight_kg > 0:
+            volume_preview = reps * weight_kg
+            st.caption(f"📦 Volume: {reps} × {weight_kg}kg = **{volume_preview:.1f} kg**")
         if st.button(f"✅ Save Set ({reps} reps)", use_container_width=True,
                      type="primary", disabled=(reps == 0), key="save_set_top"):
-            db.save_workout(st.session_state.username, display_name, reps, 1)
+            db.save_workout(st.session_state.username, display_name, reps, 1,
+                            weight_kg=weight_kg if weight_kg > 0 else None)
             st.toast(f"Saved {reps} reps of {display_name}!", icon="💾")
             if st.session_state.counter_obj:
                 st.session_state.counter_obj.reset()
@@ -557,6 +573,16 @@ def _render_webcam(exercise_name):
 def _render_upload(exercise_name):
     import time as _time
     st.markdown(f"### {exercise_name} — Video Analysis")
+
+    # Weight input for volume tracking
+    weight_kg = st.number_input(
+        "🏋️ Weight used (kg)", min_value=0.0, max_value=500.0,
+        value=st.session_state.get("_upload_weight_kg", 0.0),
+        step=0.5, key="upload_weight_input",
+        help="Enter 0 for bodyweight exercises"
+    )
+    st.session_state["_upload_weight_kg"] = weight_kg
+
     uploaded = st.file_uploader("Drop a workout video here",
                                 type=["mp4", "avi", "mov", "mkv"], key="video_upload")
     if not uploaded:
@@ -604,6 +630,7 @@ def _render_upload(exercise_name):
         obj.reset()
         st.session_state["_upload_final_reps"]   = 0
         st.session_state["_upload_exercise"]     = exercise_name
+        st.session_state["_upload_weight_kg"]    = weight_kg
         st.session_state["_upload_running"]      = True
         st.session_state["_upload_completed_at"] = 0.0
 
@@ -650,15 +677,19 @@ def _render_upload(exercise_name):
     # ── Persistent Save button + countdown hint ────────────────────────────────
     stored_reps = st.session_state.get("_upload_final_reps", 0)
     stored_ex   = st.session_state.get("_upload_exercise", exercise_name)
+    stored_w    = st.session_state.get("_upload_weight_kg", 0.0)
     completed_at = st.session_state.get("_upload_completed_at", 0.0)
     if stored_reps > 0:
         _, display_name = EXERCISES.get(stored_ex, (None, stored_ex))
         elapsed = int(_time.time() - completed_at) if completed_at > 0 else 0
         remaining = max(0, 60 - elapsed)
+        if stored_w > 0:
+            st.caption(f"📦 Volume: {stored_reps} × {stored_w}kg = **{stored_reps * stored_w:.1f} kg**")
         st.caption(f"⏱️ Auto-saves in {remaining}s if not saved manually.")
         if st.button(f"💾 Save {stored_reps} Reps to History",
                      type="primary", use_container_width=True, key="upload_save_btn"):
-            db.save_workout(st.session_state.username, display_name, stored_reps, 1)
+            db.save_workout(st.session_state.username, display_name, stored_reps, 1,
+                            weight_kg=stored_w if stored_w > 0 else None)
             st.toast("Workout saved!", icon="✅")
             st.session_state["_upload_final_reps"]   = 0
             st.session_state["_upload_completed_at"] = 0.0
@@ -671,22 +702,19 @@ def _render_upload(exercise_name):
 def render_dashboard_page():
     st.markdown("""
     <h1 style="font-size:2rem;font-weight:800;color:#f1f5f9;margin-bottom:4px;">📊 Dashboard</h1>
-    <p style="color:#6b7280;font-size:0.9rem;margin-bottom:24px;">Your workout history & muscle breakdown</p>
+    <p style="color:#6b7280;font-size:0.9rem;margin-bottom:24px;">Your workout history &amp; muscle breakdown</p>
     """, unsafe_allow_html=True)
 
-    username = st.session_state.username
-
-    # ── Calendar month navigation via arrow buttons ────────────────────────────
-    year  = st.session_state["_dashboard_year"]
-    month = st.session_state["_dashboard_month"]
+    username  = st.session_state.username
+    year      = st.session_state["_dashboard_year"]
+    month     = st.session_state["_dashboard_month"]
     month_str = f"{year}-{month:02d}"
 
     nav_l, nav_c, nav_r = st.columns([1, 4, 1])
     with nav_l:
         if st.button("‹", use_container_width=True, key="cal_prev"):
             month -= 1
-            if month < 1:
-                month = 12; year -= 1
+            if month < 1: month = 12; year -= 1
             st.session_state["_dashboard_year"]  = year
             st.session_state["_dashboard_month"] = month
             st.rerun()
@@ -698,8 +726,7 @@ def render_dashboard_page():
     with nav_r:
         if st.button("›", use_container_width=True, key="cal_next"):
             month += 1
-            if month > 12:
-                month = 1; year += 1
+            if month > 12: month = 1; year += 1
             st.session_state["_dashboard_year"]  = year
             st.session_state["_dashboard_month"] = month
             st.rerun()
@@ -707,12 +734,17 @@ def render_dashboard_page():
     history      = db.get_workout_history(username)
     muscle_stats = db.get_monthly_stats(username, month_str)
     total_sets   = db.get_total_sets_month(username, month_str)
+    volume_data  = db.get_monthly_volume_by_exercise(username, month_str)
 
-    # ── Summary cards ─────────────────────────────────────────────────────────
+    # Previous month for radar comparison
+    prev_m_str = f"{year-1}-12" if month == 1 else f"{year}-{month-1:02d}"
+    prev_muscle_stats = db.get_monthly_stats(username, prev_m_str)
+
     days_trained = [d for d in history if d.startswith(month_str)]
     top_muscle   = max(muscle_stats, key=muscle_stats.get) if any(muscle_stats.values()) else "—"
+    total_volume = sum(volume_data.values())
 
-    mc1, mc2, mc3 = st.columns(3)
+    mc1, mc2, mc3, mc4 = st.columns(4)
     with mc1:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(16,185,129,0.25);text-align:center;">
             <div class="stat-label">Days Trained</div>
@@ -720,156 +752,346 @@ def render_dashboard_page():
     with mc2:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(99,102,241,0.25);text-align:center;">
             <div class="stat-label">Sets Performed</div>
-            <div class="stat-value" style="color:#6366f1;">{total_sets:,}</div></div>""",
-                    unsafe_allow_html=True)
+            <div class="stat-value" style="color:#6366f1;">{total_sets:,}</div></div>""", unsafe_allow_html=True)
     with mc3:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(245,158,11,0.25);text-align:center;">
             <div class="stat-label">Top Muscle</div>
-            <div class="stat-value" style="color:#f59e0b;font-size:1.6rem;">{top_muscle}</div>
-            </div>""", unsafe_allow_html=True)
+            <div class="stat-value" style="color:#f59e0b;font-size:1.6rem;">{top_muscle}</div></div>""", unsafe_allow_html=True)
+    with mc4:
+        st.markdown(f"""<div class="stat-card" style="border-color:rgba(139,92,246,0.25);text-align:center;">
+            <div class="stat-label">Total Volume</div>
+            <div class="stat-value" style="color:#8b5cf6;font-size:1.8rem;">{total_volume:,.0f}<span style="font-size:0.9rem;color:#6b7280;"> kg</span></div></div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
-
     left_col, right_col = st.columns([3, 2], gap="large")
 
-    # ── Calendar ──────────────────────────────────────────────────────────────
     with left_col:
         st.markdown("#### 📅 Workout Calendar")
         _render_calendar(history, month_str)
-
         workout_dates = sorted([d for d in history if d.startswith(month_str)], reverse=True)
         if workout_dates:
             st.markdown("<br>", unsafe_allow_html=True)
             chosen = st.selectbox("🔍 View workout for date", workout_dates,
-                                  format_func=lambda d: datetime.strptime(d, "%Y-%m-%d")
-                                  .strftime("%A, %b %d"))
+                                  format_func=lambda d: datetime.strptime(d, "%Y-%m-%d").strftime("%A, %b %d"))
             if chosen and chosen in history:
                 _render_day_detail(chosen, history[chosen])
 
-    # ── Muscle chart ──────────────────────────────────────────────────────────
     with right_col:
-        st.markdown("#### 💪 Muscle Group Breakdown")
-        if any(muscle_stats.values()):
-            _render_muscle_chart(muscle_stats)
-        else:
-            st.info("No workout data for this month yet.")
+        st.markdown("#### 🕸️ Muscle Distribution")
+        _render_radar_chart(muscle_stats, prev_muscle_stats)
+        st.markdown("#### 🫀 Muscle Heatmap")
+        _render_svg_heatmap(muscle_stats)
+
+    if volume_data:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("#### 📦 Volume Lifted This Month (kg)")
+        _render_volume_chart(volume_data)
 
 
 def _render_calendar(history, month_str):
-    """Render a compact HTML calendar grid."""
+    import calendar
     try:
         year, month = map(int, month_str.split("-"))
     except ValueError:
-        st.error("Invalid month format. Use YYYY-MM.")
         return
-
-    import calendar
-    cal = calendar.monthcalendar(year, month)
+    cal        = calendar.monthcalendar(year, month)
     month_name = datetime(year, month, 1).strftime("%B %Y")
     today_str  = date.today().isoformat()
-
-    rows = ["<div style='font-size:0.85rem;'>"]
-    rows.append(f"<p style='color:#6b7280;margin-bottom:8px;font-weight:600;'>{month_name}</p>")
+    rows = [f"<div style='font-size:0.85rem;'><p style='color:#6b7280;margin-bottom:8px;font-weight:600;'>{month_name}</p>"]
     rows.append("<div style='display:grid;grid-template-columns:repeat(7,1fr);gap:4px;'>")
-
-    for day_name in ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]:
-        rows.append(f"<div style='text-align:center;color:#4b5563;font-size:0.7rem;padding:4px;'>{day_name}</div>")
-
+    for dn in ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]:
+        rows.append(f"<div style='text-align:center;color:#4b5563;font-size:0.7rem;padding:4px;'>{dn}</div>")
     for week in cal:
         for day in week:
             if day == 0:
-                rows.append("<div></div>")
-                continue
+                rows.append("<div></div>"); continue
             date_str = f"{year}-{month:02d}-{day:02d}"
             has_data = date_str in history
             is_today = date_str == today_str
-            bg  = "rgba(16,185,129,0.15)"  if has_data else "rgba(255,255,255,0.03)"
-            bdr = "rgba(16,185,129,0.4)"   if has_data else "rgba(255,255,255,0.07)"
+            bg  = "rgba(16,185,129,0.15)" if has_data else "rgba(255,255,255,0.03)"
+            bdr = "rgba(16,185,129,0.4)"  if has_data else "rgba(255,255,255,0.07)"
             col = "#10b981" if has_data else "#9ca3af"
-            if is_today:
-                bdr = "#6366f1"
-                col = "#a5b4fc"
+            if is_today: bdr = "#6366f1"; col = "#a5b4fc"
             dot = "<br><span style='display:block;width:5px;height:5px;border-radius:50%;background:#10b981;margin:0 auto;'></span>" if has_data else ""
-            rows.append(f"""<div style='text-align:center;padding:6px 2px;border-radius:6px;
-                background:{bg};border:1px solid {bdr};color:{col};font-weight:500;'>
-                {day}{dot}</div>""")
-
+            rows.append(f"<div style='text-align:center;padding:6px 2px;border-radius:6px;"
+                        f"background:{bg};border:1px solid {bdr};color:{col};font-weight:500;'>{day}{dot}</div>")
     rows.append("</div></div>")
     st.markdown("".join(rows), unsafe_allow_html=True)
 
 
 def _render_day_detail(date_str, exercises):
-    """Scrollable detail card showing per-set breakdown for a workout day."""
     display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %d, %Y")
-    st.markdown(f"""
-    <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
+    st.markdown(f"""<div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
         border-radius:14px;padding:16px;margin-top:8px;">
         <p style="color:#6b7280;font-size:0.75rem;margin:0 0 12px;">{display}</p>""",
         unsafe_allow_html=True)
-
     for ex, data in exercises.items():
-        sets_list = db._entry_sets_list(data)
-        total_reps = sum(sets_list)
-        n_sets     = len(sets_list)
-        st.markdown(f"""
-        <div style="margin-bottom:10px;padding:10px 14px;border-radius:10px;
+        sets_list    = db._entry_sets_list(data)
+        weights_list = db._entry_weights_list(data)
+        n_sets       = len(sets_list)
+        total_reps   = sum(sets_list)
+        w_list       = list(weights_list) + [0.0] * max(0, n_sets - len(weights_list))
+        total_vol    = sum(r * w for r, w in zip(sets_list, w_list))
+        vol_str      = f" · {total_vol:.1f} kg vol" if total_vol > 0 else ""
+        st.markdown(f"""<div style="margin-bottom:10px;padding:10px 14px;border-radius:10px;
             background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="color:#f1f5f9;font-weight:700;font-size:0.9rem;">{ex}</span>
-                <span style="color:#10b981;font-weight:800;font-size:0.95rem;">{n_sets} set{'s' if n_sets!=1 else ''} &middot; {total_reps} total reps</span>
+                <span style="color:#10b981;font-weight:800;font-size:0.85rem;">{n_sets} set{'s' if n_sets!=1 else ''} &middot; {total_reps} reps{vol_str}</span>
             </div>""", unsafe_allow_html=True)
-        for i, rep_count in enumerate(sets_list, 1):
-            st.markdown(f"""
-            <div style="display:flex;justify-content:space-between;padding:4px 8px;
+        for i, (rep_count, w) in enumerate(zip(sets_list, w_list), 1):
+            w_str    = f" @ {w:.1f}kg" if w > 0 else ""
+            vol_str2 = f" = {rep_count*w:.1f}kg vol" if w > 0 else ""
+            st.markdown(f"""<div style="display:flex;justify-content:space-between;padding:4px 8px;
                 border-radius:6px;background:rgba(255,255,255,0.02);margin-bottom:3px;">
                 <span style="color:#9ca3af;font-size:0.8rem;">Set {i}</span>
-                <span style="color:#d1d5db;font-weight:600;font-size:0.8rem;">{rep_count} reps</span>
+                <span style="color:#d1d5db;font-weight:600;font-size:0.8rem;">{rep_count} reps{w_str}{vol_str2}</span>
             </div>""", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_muscle_chart(muscle_stats):
-    labels  = [k for k, v in muscle_stats.items() if v > 0]
-    values  = [muscle_stats[k] for k in labels]
-    colors  = [MUSCLE_COLOURS.get(k, "#6366f1") for k in labels]
-
-    fig = go.Figure(go.Pie(
-        labels=labels, values=values,
-        marker=dict(colors=colors, line=dict(color="#111827", width=2)),
-        hole=0.55, textinfo="label+percent",
-        textfont=dict(color="#f1f5f9", size=12),
-        hovertemplate="%{label}: %{value} sets<extra></extra>",
-    ))
+def _render_radar_chart(current_stats, prev_stats):
+    groups    = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"]
+    cur_vals  = [current_stats.get(g, 0) for g in groups]
+    prev_vals = [prev_stats.get(g, 0)    for g in groups]
+    if not any(cur_vals) and not any(prev_vals):
+        st.info("No workout data for this month yet."); return
+    fig = go.Figure()
+    fig.add_trace(go.Scatterpolar(
+        r=prev_vals + [prev_vals[0]], theta=groups + [groups[0]],
+        fill="toself", name="Previous",
+        line=dict(color="#6b7280", width=1.5), fillcolor="rgba(107,114,128,0.12)"))
+    fig.add_trace(go.Scatterpolar(
+        r=cur_vals + [cur_vals[0]], theta=groups + [groups[0]],
+        fill="toself", name="Current",
+        line=dict(color="#6366f1", width=2.5), fillcolor="rgba(99,102,241,0.18)"))
     fig.update_layout(
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(visible=True, showticklabels=False, gridcolor="rgba(255,255,255,0.08)"),
+            angularaxis=dict(tickfont=dict(color="#9ca3af", size=11), gridcolor="rgba(255,255,255,0.08)"),
+        ),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(t=10, b=10, l=10, r=10),
-        legend=dict(font=dict(color="#9ca3af", size=11),
-                    bgcolor="rgba(0,0,0,0)", orientation="h"),
-        showlegend=True,
+        legend=dict(font=dict(color="#9ca3af", size=11), bgcolor="rgba(0,0,0,0)", orientation="h", y=-0.15),
+        margin=dict(t=20, b=30, l=20, r=20), height=260,
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Horizontal bars
-    max_sets = max(values, default=1)
-    for muscle, n_sets in muscle_stats.items():
-        if n_sets == 0:
-            continue
-        pct   = n_sets / max_sets
-        color = MUSCLE_COLOURS.get(muscle, "#6366f1")
-        st.markdown(f"""
-        <div style="margin-bottom:10px;">
-            <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                <span style="font-size:0.78rem;color:#d1d5db;">{muscle}</span>
-                <span style="font-size:0.78rem;color:#6b7280;">{n_sets} set{'s' if n_sets!=1 else ''}</span>
-            </div>
-            <div style="background:rgba(255,255,255,0.06);border-radius:999px;height:7px;overflow:hidden;">
-                <div style="width:{pct*100:.0f}%;height:100%;background:{color};border-radius:999px;
-                    transition:width 1s ease;"></div>
-            </div>
-        </div>""", unsafe_allow_html=True)
 
+def _render_svg_heatmap(muscle_stats):
+    groups   = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"]
+    max_sets = max((muscle_stats.get(g, 0) for g in groups), default=1) or 1
+
+    def _col(muscle):
+        v = muscle_stats.get(muscle, 0)
+        if v == 0: return "rgba(255,255,255,0.06)"
+        alpha = 0.25 + 0.65 * (v / max_sets)
+        h = MUSCLE_COLOURS.get(muscle, "#6366f1").lstrip("#")
+        r, g2, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+        return f"rgba({r},{g2},{b},{alpha:.2f})"
+
+    arms  = _col("Arms");  chest = _col("Chest"); back  = _col("Back")
+    legs  = _col("Legs");  shold = _col("Shoulders"); core = _col("Core")
+
+    svg = f"""<div style="display:flex;justify-content:center;gap:24px;padding:8px 0;">
+<div style="text-align:center;">
+  <div style="font-size:0.65rem;color:#4b5563;margin-bottom:4px;letter-spacing:.08em;">FRONT</div>
+  <svg viewBox="0 0 120 260" width="100" height="220" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="60" cy="22" rx="16" ry="19" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <ellipse cx="30" cy="58" rx="16" ry="10" fill="{shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <ellipse cx="90" cy="58" rx="16" ry="10" fill="{shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="38" y="48" width="44" height="38" rx="6" fill="{chest}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="40" y="88" width="40" height="44" rx="5" fill="{core}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="13" y="55" width="15" height="42" rx="7" fill="{arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="92" y="55" width="15" height="42" rx="7" fill="{arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="10" y="99" width="13" height="36" rx="6" fill="{arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
+    <rect x="97" y="99" width="13" height="36" rx="6" fill="{arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
+    <rect x="40" y="134" width="17" height="58" rx="8" fill="{legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="63" y="134" width="17" height="58" rx="8" fill="{legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="41" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+    <rect x="65" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+  </svg>
+</div>
+<div style="text-align:center;">
+  <div style="font-size:0.65rem;color:#4b5563;margin-bottom:4px;letter-spacing:.08em;">BACK</div>
+  <svg viewBox="0 0 120 260" width="100" height="220" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="60" cy="22" rx="16" ry="19" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
+    <ellipse cx="30" cy="58" rx="16" ry="10" fill="{shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <ellipse cx="90" cy="58" rx="16" ry="10" fill="{shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="34" y="48" width="52" height="50" rx="6" fill="{back}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="40" y="98" width="40" height="34" rx="5" fill="{back}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="13" y="55" width="15" height="42" rx="7" fill="{arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="92" y="55" width="15" height="42" rx="7" fill="{arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="10" y="99" width="13" height="36" rx="6" fill="{arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
+    <rect x="97" y="99" width="13" height="36" rx="6" fill="{arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
+    <rect x="40" y="134" width="17" height="58" rx="8" fill="{legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="63" y="134" width="17" height="58" rx="8" fill="{legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+    <rect x="41" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+    <rect x="65" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
+  </svg>
+</div></div>
+<div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:6px;">"""
+    for g in groups:
+        c = MUSCLE_COLOURS.get(g, "#6366f1"); n = muscle_stats.get(g, 0)
+        svg += f'<span style="font-size:0.7rem;color:#9ca3af;display:flex;align-items:center;gap:4px;"><span style="width:8px;height:8px;border-radius:50%;background:{c};display:inline-block;"></span>{g}: {n}</span>'
+    svg += "</div>"
+    st.markdown(svg, unsafe_allow_html=True)
+
+
+def _render_volume_chart(volume_data):
+    if not volume_data:
+        st.info("No volume data yet — add weight when saving sets."); return
+    exercises = list(volume_data.keys())
+    volumes   = [volume_data[e] for e in exercises]
+    colors    = [MUSCLE_COLOURS.get(db.EXERCISE_MUSCLE_MAP.get(e, ""), "#6366f1") for e in exercises]
+    fig = go.Figure(go.Bar(
+        x=exercises, y=volumes,
+        marker=dict(color=colors, line=dict(color="rgba(0,0,0,0)")),
+        text=[f"{v:,.1f} kg" for v in volumes], textposition="outside",
+        textfont=dict(color="#9ca3af", size=11),
+        hovertemplate="%{x}: %{y:,.1f} kg<extra></extra>",
+    ))
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", color="#6b7280", title="Volume (kg)"),
+        xaxis=dict(color="#9ca3af", tickangle=-25),
+        margin=dict(t=30, b=60, l=50, r=20), height=280, showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# METRICS PAGE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def render_metrics_page():
+    st.markdown("""
+    <h1 style="font-size:2rem;font-weight:800;color:#f1f5f9;margin-bottom:4px;">📏 Body Metrics</h1>
+    <p style="color:#6b7280;font-size:0.9rem;margin-bottom:24px;">Track your weight &amp; height over time</p>
+    """, unsafe_allow_html=True)
+
+    username = st.session_state.username
+    today    = date.today()
+
+    # ── Log new metric ────────────────────────────────────────────────────────
+    with st.expander("➕ Log Today's Metrics", expanded=True):
+        with st.form("metrics_form"):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                log_date = st.date_input("Date", value=today, max_value=today, key="metric_date")
+            with c2:
+                log_weight = st.number_input("Body Weight (kg)", min_value=0.0,
+                                             max_value=500.0, value=0.0, step=0.1, key="metric_weight")
+            with c3:
+                log_height = st.number_input("Height (cm)", min_value=0.0,
+                                             max_value=300.0, value=0.0, step=0.1, key="metric_height")
+            if st.form_submit_button("💾 Save Metrics", use_container_width=True, type="primary"):
+                w = log_weight if log_weight > 0 else None
+                h = log_height if log_height > 0 else None
+                if w is None and h is None:
+                    st.error("Enter at least one value (weight or height).")
+                else:
+                    try:
+                        db.log_metric(username, log_date.isoformat(), w, h)
+                        st.success(f"✅ Metrics saved for {log_date.strftime('%B %d, %Y')}!")
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+
+    # ── Load history ──────────────────────────────────────────────────────────
+    metrics = db.get_metrics(username)
+    if not metrics:
+        st.info("No metrics logged yet. Start tracking above! 📈")
+        return
+
+    dates   = [m["date"] for m in metrics]
+    weights = [m.get("weight_kg") for m in metrics]
+    heights = [m.get("height_cm") for m in metrics]
+
+    # ── Weight chart ──────────────────────────────────────────────────────────
+    w_pairs = [(d, w) for d, w in zip(dates, weights) if w is not None]
+    h_pairs = [(d, h) for d, h in zip(dates, heights) if h is not None]
+
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown("#### ⚖️ Weight Over Time")
+        if w_pairs:
+            _render_metric_chart(w_pairs, "Weight (kg)", "#10b981")
+        else:
+            st.info("No weight data logged yet.")
+
+    with chart_col2:
+        st.markdown("#### 📐 Height Over Time")
+        if h_pairs:
+            _render_metric_chart(h_pairs, "Height (cm)", "#6366f1")
+        else:
+            st.info("No height data logged yet.")
+
+    # ── History table ─────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("#### 📋 Full History")
+    rows_html = ""
+    for m in reversed(metrics):
+        d  = datetime.strptime(m["date"], "%Y-%m-%d").strftime("%b %d, %Y")
+        wt = f"{m['weight_kg']:.1f} kg" if m.get("weight_kg") else "—"
+        ht = f"{m['height_cm']:.1f} cm" if m.get("height_cm") else "—"
+        rows_html += f"""<div style="display:flex;justify-content:space-between;padding:8px 14px;
+            border-radius:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);margin-bottom:4px;">
+            <span style="color:#9ca3af;font-size:0.82rem;">{d}</span>
+            <span style="color:#10b981;font-weight:600;font-size:0.82rem;">⚖️ {wt}</span>
+            <span style="color:#6366f1;font-weight:600;font-size:0.82rem;">📐 {ht}</span>
+        </div>"""
+    st.markdown(rows_html, unsafe_allow_html=True)
+
+
+def _render_metric_chart(pairs, ylabel, color):
+    """
+    Plot a metric over time.
+    Connect points with a line only if consecutive dates differ by ≤ 7 days,
+    otherwise show isolated markers.
+    """
+    if not pairs:
+        return
+    x_vals = [p[0] for p in pairs]
+    y_vals = [p[1] for p in pairs]
+
+    # Build segments: connected where gap ≤ 7 days, gap otherwise
+    from datetime import datetime as dt2
+    fig = go.Figure()
+
+    seg_x, seg_y = [x_vals[0]], [y_vals[0]]
+    for i in range(1, len(x_vals)):
+        gap = (dt2.strptime(x_vals[i], "%Y-%m-%d") - dt2.strptime(x_vals[i-1], "%Y-%m-%d")).days
+        if gap <= 7:
+            seg_x.append(x_vals[i]); seg_y.append(y_vals[i])
+        else:
+            # Flush current segment
+            if len(seg_x) > 1:
+                fig.add_trace(go.Scatter(x=seg_x, y=seg_y, mode="lines+markers",
+                    line=dict(color=color, width=2.5),
+                    marker=dict(color=color, size=7),
+                    showlegend=False, hovertemplate="%{x}: %{y}<extra></extra>"))
+            else:
+                fig.add_trace(go.Scatter(x=seg_x, y=seg_y, mode="markers",
+                    marker=dict(color=color, size=9),
+                    showlegend=False, hovertemplate="%{x}: %{y}<extra></extra>"))
+            seg_x, seg_y = [x_vals[i]], [y_vals[i]]
+
+    # Final segment
+    mode = "lines+markers" if len(seg_x) > 1 else "markers"
+    fig.add_trace(go.Scatter(x=seg_x, y=seg_y, mode=mode,
+        line=dict(color=color, width=2.5),
+        marker=dict(color=color, size=7 if len(seg_x) > 1 else 10),
+        showlegend=False, hovertemplate="%{x}: %{y}<extra></extra>"))
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", color="#6b7280", title=ylabel),
+        xaxis=dict(color="#9ca3af", tickangle=-25, showgrid=False),
+        margin=dict(t=20, b=50, l=50, r=20), height=260,
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -885,11 +1107,9 @@ def render_chatbot_page():
 
     username = st.session_state.username
 
-    # Load history once
     if not st.session_state.chat_history:
         st.session_state.chat_history = db.load_chat_history(username)
 
-    # Clear button
     col1, col2 = st.columns([6, 1])
     with col2:
         if st.button("🗑 Clear", use_container_width=True):
@@ -897,23 +1117,19 @@ def render_chatbot_page():
             st.session_state.chat_history = []
             st.rerun()
 
-    # Chat history display
     chat_container = st.container(height=450)
     with chat_container:
         if not st.session_state.chat_history:
-            st.markdown("""
-            <div style="text-align:center;padding:40px;color:#4b5563;">
+            st.markdown("""<div style="text-align:center;padding:40px;color:#4b5563;">
                 <div style="font-size:2.5rem;margin-bottom:12px;">🤖</div>
                 <p style="margin:0;">Hi! I'm <strong style="color:#a5b4fc;">ActionBot</strong>.
                 Ask me about meal plans, macros, supplements, or recovery!</p>
             </div>""", unsafe_allow_html=True)
         else:
             for msg in st.session_state.chat_history:
-                with st.chat_message(msg["role"],
-                                     avatar="🧑" if msg["role"]=="user" else "🤖"):
+                with st.chat_message(msg["role"], avatar="🧑" if msg["role"]=="user" else "🤖"):
                     st.markdown(msg["content"])
 
-    # Suggested prompts (shown when chat is empty)
     if not st.session_state.chat_history:
         st.markdown("**Try asking:**")
         c1, c2 = st.columns(2)
@@ -926,14 +1142,11 @@ def render_chatbot_page():
         for i, prompt in enumerate(prompts):
             with (c1 if i % 2 == 0 else c2):
                 if st.button(f"💬 {prompt}", use_container_width=True, key=f"prompt_{i}"):
-                    _send_chat_message(username, prompt)
-                    st.rerun()
+                    _send_chat_message(username, prompt); st.rerun()
 
-    # Input
     user_input = st.chat_input("Ask about meal plans, nutrition, recovery…")
     if user_input:
-        _send_chat_message(username, user_input)
-        st.rerun()
+        _send_chat_message(username, user_input); st.rerun()
 
 
 def _send_chat_message(username, message):
@@ -953,11 +1166,9 @@ def main():
     inject_css()
     _init_state()
 
-    # ── Cookie Controller — synchronous, works on first render ────────────────
     ctrl = CookieController()
     st.session_state["_cookie_manager"] = ctrl
 
-    # ── Restore session from cookie on page reload ─────────────────────────────
     if not st.session_state.logged_in:
         token = ctrl.get(AUTH_COOKIE_NAME)
         if token:
@@ -969,16 +1180,12 @@ def main():
                     st.session_state.logged_in       = True
                     st.session_state.onboarding_done = user.get("onboarding_complete", False)
 
-    # ── Auth gates ────────────────────────────────────────────────────────────
     if not st.session_state.logged_in:
-        render_login_page(cookie_manager=ctrl)
-        return
+        render_login_page(cookie_manager=ctrl); return
 
     if not st.session_state.onboarding_done:
-        render_onboarding_page()
-        return
+        render_onboarding_page(); return
 
-    # Render sidebar and get active page controls
     exercise_name, mode = render_sidebar()
 
     page = st.session_state.page
@@ -988,6 +1195,8 @@ def main():
         render_dashboard_page()
     elif page == "chatbot":
         render_chatbot_page()
+    elif page == "metrics":
+        render_metrics_page()
 
 
 if __name__ == "__main__":

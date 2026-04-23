@@ -1,28 +1,12 @@
 /**
- * api.js
- * Centralized API client for ActionCount frontend.
- * All fetch calls go through here — handles auth headers and error normalization.
+ * api.js — updated with weight_kg, volume, and metrics APIs
  */
 
 const API_BASE = window.location.origin;
 
-/** Read JWT token from localStorage */
-function getToken() {
-  return localStorage.getItem("ac_token");
-}
-
-/** Save JWT token to localStorage */
-function setToken(token) {
-  localStorage.setItem("ac_token", token);
-}
-
-/** Remove JWT token (logout) */
-function clearToken() {
-  localStorage.removeItem("ac_token");
-  localStorage.removeItem("ac_username");
-}
-
-/** Build Authorization header object */
+function getToken()    { return localStorage.getItem("ac_token"); }
+function setToken(t)   { localStorage.setItem("ac_token", t); }
+function clearToken()  { localStorage.removeItem("ac_token"); localStorage.removeItem("ac_username"); }
 function authHeaders(extra = {}) {
   const token = getToken();
   return token
@@ -30,126 +14,84 @@ function authHeaders(extra = {}) {
     : { "Content-Type": "application/json", ...extra };
 }
 
-/** Generic fetch wrapper — throws on non-2xx */
 async function apiFetch(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: { ...authHeaders(), ...(options.headers || {}) },
+    ...options, headers: { ...authHeaders(), ...(options.headers || {}) },
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
-    try {
-      const json = await res.json();
-      detail = json.detail || detail;
-    } catch (_) {}
+    try { const json = await res.json(); detail = json.detail || detail; } catch (_) {}
     throw new Error(detail);
   }
   return res.json();
 }
 
-// ── Auth ─────────────────────────────────────────────────────────────────────
-
 const Auth = {
   async signup(username, password, email = "") {
     const data = await apiFetch("/api/auth/signup", {
-      method: "POST",
-      body: JSON.stringify({ username, password, email }),
+      method: "POST", body: JSON.stringify({ username, password, email }),
     });
     setToken(data.access_token);
     localStorage.setItem("ac_username", username);
-    return data; // { access_token, is_new_user }
+    return data;
   },
-
   async login(email, password) {
     const data = await apiFetch("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ email, password }),
+      method: "POST", body: JSON.stringify({ email, password }),
     });
     setToken(data.access_token);
-    // Decode JWT to get the username (sub) for local storage
     try {
       const payload = JSON.parse(atob(data.access_token.split(".")[1]));
       localStorage.setItem("ac_username", payload.sub || email);
-    } catch (_) {
-      localStorage.setItem("ac_username", email);
-    }
+    } catch (_) { localStorage.setItem("ac_username", email); }
     return data;
   },
-
-  logout() {
-    clearToken();
-    window.location.href = "/login";
-  },
-
-  isLoggedIn() {
-    return !!getToken();
-  },
-
-  username() {
-    return localStorage.getItem("ac_username") || "";
-  },
+  logout()    { clearToken(); window.location.href = "/login"; },
+  isLoggedIn(){ return !!getToken(); },
+  username()  { return localStorage.getItem("ac_username") || ""; },
 };
-
-// ── Profile ───────────────────────────────────────────────────────────────────
 
 const Profile = {
-  async get() {
-    return apiFetch("/api/user/profile");
-  },
-
-  async save(profileData) {
-    return apiFetch("/api/user/profile", {
-      method: "POST",
-      body: JSON.stringify(profileData),
-    });
-  },
+  async get()            { return apiFetch("/api/user/profile"); },
+  async save(profileData){ return apiFetch("/api/user/profile", { method: "POST", body: JSON.stringify(profileData) }); },
 };
 
-// ── Workouts ──────────────────────────────────────────────────────────────────
-
 const Workout = {
-  async save(exercise, reps, sets = 1, date = null) {
+  // weight_kg optional — pass null/undefined for bodyweight exercises
+  async save(exercise, reps, sets = 1, date = null, weight_kg = null) {
     return apiFetch("/api/workout/save", {
       method: "POST",
-      body: JSON.stringify({ exercise, reps, sets, date }),
+      body: JSON.stringify({ exercise, reps, sets, date, weight_kg }),
     });
   },
-
-  async history() {
-    return apiFetch("/api/workout/history");
-  },
-
-  async stats(month = null) {
+  async history()         { return apiFetch("/api/workout/history"); },
+  async stats(month = null){
     const qs = month ? `?month=${month}` : "";
     return apiFetch(`/api/workout/stats${qs}`);
   },
+  async volume(month = null){
+    const qs = month ? `?month=${month}` : "";
+    return apiFetch(`/api/workout/volume${qs}`);
+  },
 };
 
-// ── Chat ──────────────────────────────────────────────────────────────────────
-
-const Chat = {
-  async send(message) {
-    return apiFetch("/api/chat", {
+const Metrics = {
+  async log(date, weight_kg = null, height_cm = null) {
+    return apiFetch("/api/metrics/log", {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ date, weight_kg, height_cm }),
     });
   },
-
-  async history() {
-    return apiFetch("/api/chat/history");
-  },
-
-  async clear() {
-    return apiFetch("/api/chat", { method: "DELETE" });
-  },
+  async get() { return apiFetch("/api/metrics"); },
 };
 
-// ── Route guard — redirect to login if not authenticated ───────────────────
+const Chat = {
+  async send(message)  { return apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ message }) }); },
+  async history()      { return apiFetch("/api/chat/history"); },
+  async clear()        { return apiFetch("/api/chat", { method: "DELETE" }); },
+};
 
 function requireAuth() {
-  if (!Auth.isLoggedIn()) {
-    window.location.href = "/login";
-    return false;
-  }
+  if (!Auth.isLoggedIn()) { window.location.href = "/login"; return false; }
   return true;
 }
