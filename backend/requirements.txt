@@ -22,6 +22,7 @@ streamlit
 streamlit-webrtc
 av
 streamlit-calendar
+streamlit-cookies-controller
 
 # AI Chatbot
 langchain

@@ -208,3 +208,6 @@ __marimo__/
 
 # Notebooks
 *.ipynb
+
+# User Data
+data

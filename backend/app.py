@@ -1,8 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-# app.py  — PART 1 OF 3: Imports · Config · CSS · Auth · Onboarding
-# Paste this at the TOP of the final app.py
-# ═══════════════════════════════════════════════════════════════════════════════
-
 import warnings
 import os
 import sys
@@ -39,13 +34,31 @@ load_dotenv()
 # ── Auth helpers (Argon2 via passlib) ────────────────────────────────────────
 from passlib.context import CryptContext
 from jose import jwt, JWTError
+from datetime import timedelta
+from streamlit_cookies_controller import CookieController
 
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
 ALGORITHM  = os.getenv("ALGORITHM", "HS256")
 _pwd_ctx   = CryptContext(schemes=["argon2"], deprecated="auto")
 
+AUTH_COOKIE_NAME    = "ac_auth"
+AUTH_COOKIE_EXPIRY  = 7   # days
+
 def _hash_pw(p): return _pwd_ctx.hash(p)
 def _verify_pw(p, h): return _pwd_ctx.verify(p, h)
+
+def _create_auth_token(username: str) -> str:
+    """Create a short-lived JWT for the auth cookie."""
+    expire = datetime.utcnow() + timedelta(days=AUTH_COOKIE_EXPIRY)
+    return jwt.encode({"sub": username, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
+
+def _decode_auth_token(token: str):
+    """Decode the JWT; returns username string or None on failure."""
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return payload.get("sub")
+    except JWTError:
+        return None
 
 
 def _password_strength(p: str) -> tuple[str, str]:
@@ -143,12 +156,21 @@ def inject_css():
 
 # ── Session state init ─────────────────────────────────────────────────────────
 def _init_state():
+    now = datetime.now()
     defaults = {
         "logged_in": False, "username": "", "onboarding_done": False,
         "page": "tracker",
         "last_exercise": list(EXERCISES.keys())[0],
         "counter_obj": None,
         "chat_history": [],
+        # Dashboard calendar navigation
+        "_dashboard_year":  now.year,
+        "_dashboard_month": now.month,
+        # Upload video UX
+        "_upload_running":      False,
+        "_upload_final_reps":   0,
+        "_upload_exercise":     "",
+        "_upload_completed_at": 0.0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -159,7 +181,7 @@ def _init_state():
 # AUTH PAGES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def render_login_page():
+def render_login_page(cookie_manager=None):
     st.markdown("""
     <div style="text-align:center;padding:40px 0 20px;">
         <div style="font-size:3.5rem;margin-bottom:8px;">🏋️</div>
@@ -185,7 +207,7 @@ def render_login_page():
                     if not login_email or not login_pwd:
                         st.error("Please fill in all fields.")
                     else:
-                        _do_login(login_email, login_pwd)
+                        _do_login(login_email, login_pwd, cookie_manager)
 
         # ── Create Account ─────────────────────────────────────────────────────
         with tab_signup:
@@ -247,10 +269,15 @@ def render_login_page():
                     st.session_state.username        = new_user
                     st.session_state.logged_in       = True
                     st.session_state.onboarding_done = False
+                    # Write cookie so reload keeps the session
+                    if cookie_manager is not None:
+                        token = _create_auth_token(new_user)
+                        cookie_manager.set(AUTH_COOKIE_NAME, token,
+                                           max_age=AUTH_COOKIE_EXPIRY * 86400)
                     st.rerun()
 
-def _do_login(email: str, password: str):
-    """Look up user by email, verify password, set session state."""
+def _do_login(email: str, password: str, cookie_manager=None):
+    """Look up user by email, verify password, set session state and cookie."""
     username = db.get_username_by_email(email)
     if username is None:
         st.error("Incorrect email or password.")
@@ -262,6 +289,11 @@ def _do_login(email: str, password: str):
     st.session_state.username        = username
     st.session_state.logged_in       = True
     st.session_state.onboarding_done = user.get("onboarding_complete", False)
+    # Persist login in cookie so reload doesn't log the user out
+    if cookie_manager is not None:
+        token = _create_auth_token(username)
+        cookie_manager.set(AUTH_COOKIE_NAME, token,
+                           max_age=AUTH_COOKIE_EXPIRY * 86400)
     st.rerun()
 
 
@@ -400,6 +432,13 @@ def render_sidebar():
 
         st.divider()
         if st.button("🚪 Logout", use_container_width=True):
+            # Remove auth cookie so reload doesn't auto-login
+            ctrl = st.session_state.get("_cookie_manager")
+            if ctrl is not None:
+                try:
+                    ctrl.remove(AUTH_COOKIE_NAME)
+                except Exception:
+                    pass
             for k in list(st.session_state.keys()):
                 del st.session_state[k]
             st.rerun()
@@ -472,41 +511,72 @@ def _render_webcam(exercise_name):
 
     with stats_col:
         st.markdown("### 📊 Stats")
-        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
-        if ctx.state.playing and ctx.video_processor:
-            stats = ctx.video_processor.get_stats()
 
-        ph = st.empty()
-        with ph.container():
-            render_stats_panel(stats["counter"], stats["feedback"],
-                               stats["progress"], stats["correct_form"])
-
-        if st.button("🔄 Refresh Stats", use_container_width=True):
-            if ctx.video_processor:
-                stats = ctx.video_processor.get_stats()
-            with ph.container():
-                render_stats_panel(stats["counter"], stats["feedback"],
-                                   stats["progress"], stats["correct_form"])
-
-        st.divider()
-        # Save Set button
-        reps = stats.get("counter", 0)
+        # Save Set button at the TOP for quick access — no scrolling needed
+        reps = int(st.session_state.counter_obj.counter) if st.session_state.counter_obj else 0
         _, display_name = EXERCISES[exercise_name]
+        st.markdown(f"""
+        <div class="stat-card" style="border-color:rgba(16,185,129,0.35);text-align:center;margin-bottom:8px;">
+            <div class="stat-label">Reps This Session</div>
+            <div class="stat-value">{reps}</div>
+        </div>""", unsafe_allow_html=True)
         if st.button(f"✅ Save Set ({reps} reps)", use_container_width=True,
-                     type="primary", disabled=(reps == 0)):
+                     type="primary", disabled=(reps == 0), key="save_set_top"):
             db.save_workout(st.session_state.username, display_name, reps, 1)
             st.toast(f"Saved {reps} reps of {display_name}!", icon="💾")
             if st.session_state.counter_obj:
                 st.session_state.counter_obj.reset()
 
+        st.divider()
+
+        # Form feedback and progress below the save button
+        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
+        if ctx.state.playing and ctx.video_processor:
+            stats = ctx.video_processor.get_stats()
+
+        fb_colour = FEEDBACK_COLOUR.get(stats["feedback"], "#9ca3af")
+        fb_emoji  = FEEDBACK_EMOJI.get(stats["feedback"], "")
+        st.markdown(f"""
+        <div class="stat-card" style="border-color:{fb_colour}44;">
+            <div class="stat-label">Form Feedback</div>
+            <div class="stat-value-sm" style="color:{fb_colour};">{fb_emoji} {stats["feedback"]}</div>
+        </div>""", unsafe_allow_html=True)
+        st.progress(int(stats["progress"]) / 100)
+        st.caption(f"{int(stats['progress'])}% complete")
+        if stats["correct_form"]:
+            st.success("✅ Form Unlocked")
+        else:
+            st.info("📍 Get in Position")
+
+        if st.button("🔄 Refresh Stats", use_container_width=True):
+            st.rerun()
+
+
 
 def _render_upload(exercise_name):
+    import time as _time
     st.markdown(f"### {exercise_name} — Video Analysis")
     uploaded = st.file_uploader("Drop a workout video here",
                                 type=["mp4", "avi", "mov", "mkv"], key="video_upload")
     if not uploaded:
         st.info("📁 Upload a video to analyse your exercise form and count reps.")
+        # Clear any stale state when a new file hasn't been dropped yet
+        st.session_state["_upload_final_reps"]   = 0
+        st.session_state["_upload_running"]      = False
+        st.session_state["_upload_completed_at"] = 0.0
         return
+
+    # ── Auto-commit check (60-second timer, fires on next Streamlit rerun) ────
+    stored_reps = st.session_state.get("_upload_final_reps", 0)
+    completed_at = st.session_state.get("_upload_completed_at", 0.0)
+    if stored_reps > 0 and completed_at > 0 and (_time.time() - completed_at) >= 60:
+        stored_ex = st.session_state.get("_upload_exercise", exercise_name)
+        _, dn = EXERCISES.get(stored_ex, (None, stored_ex))
+        db.save_workout(st.session_state.username, dn, stored_reps, 1)
+        st.toast(f"⏱️ Auto-saved {stored_reps} reps of {dn}!", icon="💾")
+        st.session_state["_upload_final_reps"]   = 0
+        st.session_state["_upload_completed_at"] = 0.0
+        stored_reps = 0
 
     vid_col, stats_col = st.columns([3, 1], gap="large")
     with vid_col:
@@ -518,9 +588,24 @@ def _render_upload(exercise_name):
         feedback_ph = st.empty()
         form_ph     = st.empty()
 
-    if st.button("▶ Start Analysis", type="primary", use_container_width=True):
+    running = st.session_state.get("_upload_running", False)
+
+    if st.button("▶ Start Analysis", type="primary", use_container_width=True,
+                 disabled=running):
+        # Auto-save any unsaved result from a previous analysis
+        if stored_reps > 0:
+            prev_ex = st.session_state.get("_upload_exercise", exercise_name)
+            _, dn = EXERCISES.get(prev_ex, (None, prev_ex))
+            db.save_workout(st.session_state.username, dn, stored_reps, 1)
+            st.toast(f"Auto-saved previous {stored_reps} reps of {dn}!", icon="💾")
+
         obj = st.session_state.counter_obj
         obj.reset()
+        st.session_state["_upload_final_reps"]   = 0
+        st.session_state["_upload_exercise"]     = exercise_name
+        st.session_state["_upload_running"]      = True
+        st.session_state["_upload_completed_at"] = 0.0
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(uploaded.getvalue())
             tmp_path = tmp.name
@@ -535,7 +620,7 @@ def _render_upload(exercise_name):
                     break
                 result = obj.process_frame(frame)
                 rgb    = cv2.cvtColor(result["frame"], cv2.COLOR_BGR2RGB)
-                frame_ph.image(rgb, channels="RGB", use_column_width=True)
+                frame_ph.image(rgb, channels="RGB", use_container_width=True)
                 prog_ph.progress(idx / total, text=f"Frame {idx}/{total}")
                 fb_c = FEEDBACK_COLOUR.get(result["feedback"], "#9ca3af")
                 fb_e = FEEDBACK_EMOJI.get(result["feedback"], "")
@@ -556,11 +641,26 @@ def _render_upload(exercise_name):
 
         prog_ph.empty()
         final_reps = int(obj.counter)
-        _, display_name = EXERCISES[exercise_name]
+        st.session_state["_upload_final_reps"]   = final_reps
+        st.session_state["_upload_running"]      = False
+        st.session_state["_upload_completed_at"] = _time.time()
         form_ph.success(f"✅ Done — **{final_reps} reps** detected!")
-        if final_reps > 0 and st.button("💾 Save to History", type="primary"):
-            db.save_workout(st.session_state.username, display_name, final_reps, 1)
+
+    # ── Persistent Save button + countdown hint ────────────────────────────────
+    stored_reps = st.session_state.get("_upload_final_reps", 0)
+    stored_ex   = st.session_state.get("_upload_exercise", exercise_name)
+    completed_at = st.session_state.get("_upload_completed_at", 0.0)
+    if stored_reps > 0:
+        _, display_name = EXERCISES.get(stored_ex, (None, stored_ex))
+        elapsed = int(_time.time() - completed_at) if completed_at > 0 else 0
+        remaining = max(0, 60 - elapsed)
+        st.caption(f"⏱️ Auto-saves in {remaining}s if not saved manually.")
+        if st.button(f"💾 Save {stored_reps} Reps to History",
+                     type="primary", use_container_width=True, key="upload_save_btn"):
+            db.save_workout(st.session_state.username, display_name, stored_reps, 1)
             st.toast("Workout saved!", icon="✅")
+            st.session_state["_upload_final_reps"]   = 0
+            st.session_state["_upload_completed_at"] = 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -575,19 +675,40 @@ def render_dashboard_page():
 
     username = st.session_state.username
 
-    # Month selector
-    col1, col2 = st.columns([2, 1])
-    with col2:
-        now = datetime.now()
-        month_str = st.text_input("Month (YYYY-MM)", value=now.strftime("%Y-%m"),
-                                   label_visibility="collapsed")
+    # ── Calendar month navigation via arrow buttons ────────────────────────────
+    year  = st.session_state["_dashboard_year"]
+    month = st.session_state["_dashboard_month"]
+    month_str = f"{year}-{month:02d}"
+
+    nav_l, nav_c, nav_r = st.columns([1, 4, 1])
+    with nav_l:
+        if st.button("‹", use_container_width=True, key="cal_prev"):
+            month -= 1
+            if month < 1:
+                month = 12; year -= 1
+            st.session_state["_dashboard_year"]  = year
+            st.session_state["_dashboard_month"] = month
+            st.rerun()
+    with nav_c:
+        st.markdown(
+            f"<p style='text-align:center;font-weight:700;font-size:1.05rem;margin:6px 0;'>"
+            f"{datetime(year, month, 1).strftime('%B %Y')}</p>",
+            unsafe_allow_html=True)
+    with nav_r:
+        if st.button("›", use_container_width=True, key="cal_next"):
+            month += 1
+            if month > 12:
+                month = 1; year += 1
+            st.session_state["_dashboard_year"]  = year
+            st.session_state["_dashboard_month"] = month
+            st.rerun()
 
     history      = db.get_workout_history(username)
     muscle_stats = db.get_monthly_stats(username, month_str)
+    total_sets   = db.get_total_sets_month(username, month_str)
 
     # ── Summary cards ─────────────────────────────────────────────────────────
     days_trained = [d for d in history if d.startswith(month_str)]
-    total_reps   = sum(muscle_stats.values())
     top_muscle   = max(muscle_stats, key=muscle_stats.get) if any(muscle_stats.values()) else "—"
 
     mc1, mc2, mc3 = st.columns(3)
@@ -597,8 +718,8 @@ def render_dashboard_page():
             <div class="stat-value">{len(days_trained)}</div></div>""", unsafe_allow_html=True)
     with mc2:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(99,102,241,0.25);text-align:center;">
-            <div class="stat-label">Total Reps</div>
-            <div class="stat-value" style="color:#6366f1;">{total_reps:,}</div></div>""",
+            <div class="stat-label">Sets Performed</div>
+            <div class="stat-value" style="color:#6366f1;">{total_sets:,}</div></div>""",
                     unsafe_allow_html=True)
     with mc3:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(245,158,11,0.25);text-align:center;">
@@ -615,7 +736,6 @@ def render_dashboard_page():
         st.markdown("#### 📅 Workout Calendar")
         _render_calendar(history, month_str)
 
-        # Date detail popup via selectbox
         workout_dates = sorted([d for d in history if d.startswith(month_str)], reverse=True)
         if workout_dates:
             st.markdown("<br>", unsafe_allow_html=True)
@@ -678,7 +798,7 @@ def _render_calendar(history, month_str):
 
 
 def _render_day_detail(date_str, exercises):
-    """Scrollable detail card for a workout day."""
+    """Scrollable detail card showing per-set breakdown for a workout day."""
     display = datetime.strptime(date_str, "%Y-%m-%d").strftime("%A, %B %d, %Y")
     st.markdown(f"""
     <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);
@@ -687,17 +807,24 @@ def _render_day_detail(date_str, exercises):
         unsafe_allow_html=True)
 
     for ex, data in exercises.items():
-        reps, sets = data.get("reps", 0), data.get("sets", 1)
+        sets_list = db._entry_sets_list(data)
+        total_reps = sum(sets_list)
+        n_sets     = len(sets_list)
         st.markdown(f"""
-        <div style="display:flex;justify-content:space-between;align-items:center;
-            padding:10px 14px;margin-bottom:6px;border-radius:10px;
-            background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);">
-            <div>
-                <span style="color:#f1f5f9;font-weight:600;font-size:0.88rem;">{ex}</span>
-                <span style="color:#6b7280;font-size:0.75rem;margin-left:8px;">{sets} set{'s' if sets!=1 else ''}</span>
-            </div>
-            <span style="color:#10b981;font-weight:800;font-size:1.1rem;">{reps} reps</span>
-        </div>""", unsafe_allow_html=True)
+        <div style="margin-bottom:10px;padding:10px 14px;border-radius:10px;
+            background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="color:#f1f5f9;font-weight:700;font-size:0.9rem;">{ex}</span>
+                <span style="color:#10b981;font-weight:800;font-size:0.95rem;">{n_sets} set{'s' if n_sets!=1 else ''} &middot; {total_reps} total reps</span>
+            </div>""", unsafe_allow_html=True)
+        for i, rep_count in enumerate(sets_list, 1):
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;padding:4px 8px;
+                border-radius:6px;background:rgba(255,255,255,0.02);margin-bottom:3px;">
+                <span style="color:#9ca3af;font-size:0.8rem;">Set {i}</span>
+                <span style="color:#d1d5db;font-weight:600;font-size:0.8rem;">{rep_count} reps</span>
+            </div>""", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -712,7 +839,7 @@ def _render_muscle_chart(muscle_stats):
         marker=dict(colors=colors, line=dict(color="#111827", width=2)),
         hole=0.55, textinfo="label+percent",
         textfont=dict(color="#f1f5f9", size=12),
-        hovertemplate="%{label}: %{value} reps<extra></extra>",
+        hovertemplate="%{label}: %{value} sets<extra></extra>",
     ))
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -724,23 +851,24 @@ def _render_muscle_chart(muscle_stats):
     st.plotly_chart(fig, use_container_width=True)
 
     # Horizontal bars
-    max_reps = max(values, default=1)
-    for muscle, reps in muscle_stats.items():
-        if reps == 0:
+    max_sets = max(values, default=1)
+    for muscle, n_sets in muscle_stats.items():
+        if n_sets == 0:
             continue
-        pct   = reps / max_reps
+        pct   = n_sets / max_sets
         color = MUSCLE_COLOURS.get(muscle, "#6366f1")
         st.markdown(f"""
         <div style="margin-bottom:10px;">
             <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
                 <span style="font-size:0.78rem;color:#d1d5db;">{muscle}</span>
-                <span style="font-size:0.78rem;color:#6b7280;">{reps} reps</span>
+                <span style="font-size:0.78rem;color:#6b7280;">{n_sets} set{'s' if n_sets!=1 else ''}</span>
             </div>
             <div style="background:rgba(255,255,255,0.06);border-radius:999px;height:7px;overflow:hidden;">
                 <div style="width:{pct*100:.0f}%;height:100%;background:{color};border-radius:999px;
                     transition:width 1s ease;"></div>
             </div>
         </div>""", unsafe_allow_html=True)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -774,7 +902,7 @@ def _get_ai_response(username: str, message: str) -> str:
             "Include specific quantities and macros in meal plans."
         )
 
-        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=api_key,
+        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key,
                                      temperature=0.7)
         msgs = [SystemMessage(content=system)]
         for m in history[-20:]:
@@ -863,9 +991,25 @@ def main():
     inject_css()
     _init_state()
 
-    # Auth gates
+    # ── Cookie Controller — synchronous, works on first render ────────────────
+    ctrl = CookieController()
+    st.session_state["_cookie_manager"] = ctrl
+
+    # ── Restore session from cookie on page reload ─────────────────────────────
     if not st.session_state.logged_in:
-        render_login_page()
+        token = ctrl.get(AUTH_COOKIE_NAME)
+        if token:
+            username = _decode_auth_token(token)
+            if username:
+                user = db.get_user(username)
+                if user:
+                    st.session_state.username        = username
+                    st.session_state.logged_in       = True
+                    st.session_state.onboarding_done = user.get("onboarding_complete", False)
+
+    # ── Auth gates ────────────────────────────────────────────────────────────
+    if not st.session_state.logged_in:
+        render_login_page(cookie_manager=ctrl)
         return
 
     if not st.session_state.onboarding_done:

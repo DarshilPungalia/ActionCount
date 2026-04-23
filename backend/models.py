@@ -61,14 +61,21 @@ class SaveWorkoutRequest(BaseModel):
 
 
 class WorkoutEntry(BaseModel):
-    reps: int
-    sets: int
+    sets: list[int]   # per-set rep counts e.g. [12, 10, 14]
+
+    @property
+    def total_reps(self) -> int:
+        return sum(self.sets)
+
+    @property
+    def total_sets(self) -> int:
+        return len(self.sets)
 
 
 class DayWorkout(BaseModel):
     """All exercises performed on a single day."""
     date: str                              # "YYYY-MM-DD"
-    exercises: dict[str, WorkoutEntry]     # {"Bicep Curl": {reps:15, sets:3}}
+    exercises: dict[str, WorkoutEntry]     # {"Bicep Curl": {sets:[12,10]}}
 
 
 class WorkoutHistoryResponse(BaseModel):
@@ -77,7 +84,7 @@ class WorkoutHistoryResponse(BaseModel):
 
 class MuscleGroupStat(BaseModel):
     muscle_group: str
-    total_reps: int
+    total_sets: int
 
 
 class WorkoutStatsResponse(BaseModel):

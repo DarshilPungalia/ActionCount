@@ -150,12 +150,31 @@ def _workout_path(username: str) -> Path:
     return WORKOUTS_DIR / f"{username}.json"
 
 
+def _entry_sets_list(entry: dict) -> list[int]:
+    """
+    Normalise a workout entry to a list of per-set rep counts.
+    Handles both the new list format  {"sets": [12, 10, 14]}
+    and the old flat format           {"reps": 36, "sets": 3}.
+    """
+    s = entry.get("sets", [])
+    if isinstance(s, list):
+        return s
+    # Legacy flat format — reconstruct as a single pseudo-set
+    reps = entry.get("reps", 0)
+    count = s if isinstance(s, int) and s > 0 else 1
+    # Distribute reps evenly across old set count (best we can do)
+    per_set, rem = divmod(reps, count)
+    result = [per_set] * count
+    result[-1] += rem
+    return result
+
+
 def save_workout(username: str, exercise: str, reps: int, sets: int,
                  workout_date: Optional[str] = None) -> dict:
     """
     Append a completed set to the user's workout log.
-    If the same exercise already has an entry for that date, reps and sets
-    are accumulated (e.g. doing two "Save Set" presses in one session).
+    Each save call appends `reps` once to the exercise's sets list.
+    `sets` param is kept for API compat but only `reps` is recorded per call.
     """
     _ensure_dirs()
     today = workout_date or date.today().isoformat()
@@ -164,39 +183,49 @@ def save_workout(username: str, exercise: str, reps: int, sets: int,
 
     day = data.setdefault(today, {})
     if exercise in day:
-        day[exercise]["reps"] += reps
-        day[exercise]["sets"] += sets
+        entry = day[exercise]
+        # Migrate old flat format on-write
+        if not isinstance(entry.get("sets"), list):
+            entry["sets"] = _entry_sets_list(entry)
+            entry.pop("reps", None)
+        entry["sets"].append(reps)
     else:
-        day[exercise] = {"reps": reps, "sets": sets}
+        day[exercise] = {"sets": [reps]}
 
     _write_json(path, data)
     return data[today]
 
 
 def get_workout_history(username: str) -> dict:
-    """Return the full workout history dict {date: {exercise: {reps, sets}}}."""
+    """Return the full workout history dict {date: {exercise: {sets: [reps...]}}}."""
     _ensure_dirs()
     return _read_json(_workout_path(username), {})
 
 
 def get_monthly_stats(username: str, year_month: Optional[str] = None) -> dict[str, int]:
     """
-    Aggregate reps by muscle group for a given month (YYYY-MM).
-    Defaults to the current month.
+    Aggregate *sets* by muscle group for a given month (YYYY-MM).
+    Returns {muscle_group: set_count}.
     """
     target_month = year_month or datetime.now().strftime("%Y-%m")
     history      = get_workout_history(username)
-    muscle_reps: dict[str, int] = {g: 0 for g in MUSCLE_GROUPS}
+    muscle_sets: dict[str, int] = {g: 0 for g in MUSCLE_GROUPS}
 
     for day_key, exercises in history.items():
         if not day_key.startswith(target_month):
             continue
         for ex_name, entry in exercises.items():
             muscle = EXERCISE_MUSCLE_MAP.get(ex_name, "Other")
-            if muscle in muscle_reps:
-                muscle_reps[muscle] += entry.get("reps", 0)
+            if muscle in muscle_sets:
+                sets_list = _entry_sets_list(entry)
+                muscle_sets[muscle] += len(sets_list)
 
-    return muscle_reps
+    return muscle_sets
+
+
+def get_total_sets_month(username: str, year_month: Optional[str] = None) -> int:
+    """Total number of sets performed in the given month."""
+    return sum(get_monthly_stats(username, year_month).values())
 
 
 # ── Chat operations ───────────────────────────────────────────────────────────

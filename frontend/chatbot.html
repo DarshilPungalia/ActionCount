@@ -195,6 +195,19 @@
 </div>
 
 <script src="/static/js/api.js"></script>
+<script>
+  // Async auth guard — validate token against backend on every page load
+  (async function authGuard() {
+    if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+    try {
+      await apiFetch('/api/user/profile');
+      document.getElementById('usernameTag').textContent = Auth.username();
+    } catch (_) {
+      clearToken();
+      window.location.href = '/login';
+    }
+  })();
+</script>
 <script src="/static/js/chat.js"></script>
 </body>
 </html>

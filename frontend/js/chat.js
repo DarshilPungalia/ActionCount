@@ -3,9 +3,7 @@
  * Dietary AI chatbot — connects to /api/chat endpoint.
  */
 
-// ── Auth guard ────────────────────────────────────────────────────────────────
-if (!requireAuth()) throw new Error("Unauthenticated");
-document.getElementById("usernameTag").textContent = Auth.username();
+// ── Auth guard handled by async script in chatbot.html ────────────────────────
 
 const messagesEl  = document.getElementById("chatMessages");
 const inputEl     = document.getElementById("chatInput");

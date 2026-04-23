@@ -284,9 +284,23 @@
 
   <script src="/static/js/api.js"></script>
   <script>
-    // Auth guard
-    if (!Auth.isLoggedIn()) window.location.href = '/login';
-    document.getElementById('nav-username').textContent = Auth.username();
+    // Async auth guard — validate token against backend on every page load
+    (async function authGuard() {
+      if (!Auth.isLoggedIn()) {
+        window.location.href = '/login';
+        return;
+      }
+      // Verify the stored token is still valid
+      try {
+        await apiFetch('/api/user/profile');
+        // Token is valid — show the username
+        document.getElementById('nav-username').textContent = Auth.username();
+      } catch (err) {
+        // Token is invalid or expired — clear and redirect
+        clearToken();
+        window.location.href = '/login';
+      }
+    })();
   </script>
   <script src="app.js" type="module"></script>
   <script src="/static/js/tracker.js"></script>

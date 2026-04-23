@@ -3,13 +3,11 @@
  * Workout calendar, monthly muscle stats, and workout detail modal.
  */
 
-// ── Auth guard ────────────────────────────────────────────────────────────────
-if (!requireAuth()) throw new Error("Unauthenticated");
-document.getElementById("usernameTag").textContent = Auth.username();
+// ── Auth guard handled by async script in dashboard.html ──────────────────────
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let workoutHistory = {};   // { "YYYY-MM-DD": { "Exercise": {reps, sets} } }
-let muscleStats    = {};   // { "Arms": 120, "Chest": 80, ... }
+let workoutHistory = {};   // { "YYYY-MM-DD": { "Exercise": {sets:[12,10,14]} } }
+let muscleStats    = {};   // { "Arms": 3, "Chest": 2, ... }  (set counts)
 let currentDate    = new Date();
 let muscleChart    = null;
 
@@ -39,7 +37,7 @@ async function loadAll() {
     // Muscle stats
     muscleStats = {};
     (statsRes.stats || []).forEach((s) => {
-      muscleStats[s.muscle_group] = s.total_reps;
+      muscleStats[s.muscle_group] = s.total_sets;
     });
 
     renderCalendar();
@@ -132,21 +130,21 @@ function makeCalDay(num, isToday, isOther, hasWorkout = false, dateStr = null) {
 function renderMuscleStats() {
   const container = document.getElementById("muscleStats");
   const hasData   = Object.values(muscleStats).some((v) => v > 0);
-  const maxReps   = Math.max(...Object.values(muscleStats), 1);
+  const maxSets   = Math.max(...Object.values(muscleStats), 1);
 
   container.innerHTML = "";
 
   const order = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"];
   order.forEach((muscle) => {
-    const reps  = muscleStats[muscle] || 0;
-    const pct   = Math.round((reps / maxReps) * 100);
+    const sets  = muscleStats[muscle] || 0;
+    const pct   = Math.round((sets / maxSets) * 100);
     const color = MUSCLE_COLORS[muscle] || "#6366f1";
 
     container.insertAdjacentHTML("beforeend", `
       <div>
         <div class="flex items-center justify-between mb-1">
           <span class="text-xs font-medium text-slate-300">${muscle}</span>
-          <span class="text-xs text-slate-500">${reps} reps</span>
+          <span class="text-xs text-slate-500">${sets} set${sets !== 1 ? 's' : ''}</span>
         </div>
         <div class="stat-bar-track">
           <div class="stat-bar-fill" style="width:0%;background:${color}" data-target="${pct}"></div>
@@ -207,11 +205,11 @@ function renderDoughnut(hasData) {
 function renderSummaryCards() {
   const ym = fmtYearMonth(currentDate);
   const daysThisMonth = Object.keys(workoutHistory).filter((d) => d.startsWith(ym));
-  const totalReps = Object.values(muscleStats).reduce((a, b) => a + b, 0);
+  const totalSets = Object.values(muscleStats).reduce((a, b) => a + b, 0);
   const topMuscle = Object.entries(muscleStats).sort((a, b) => b[1] - a[1])[0];
 
   document.getElementById("totalWorkoutDays").textContent = daysThisMonth.length;
-  document.getElementById("totalRepsMonth").textContent  = totalReps.toLocaleString();
+  document.getElementById("totalRepsMonth").textContent  = totalSets.toLocaleString();
   document.getElementById("topMuscle").textContent       = topMuscle && topMuscle[1] > 0 ? topMuscle[0] : "—";
 }
 
@@ -232,17 +230,31 @@ function openModal(dateStr) {
     list.innerHTML = `<p class="text-slate-500 text-sm text-center py-4">No exercises recorded.</p>`;
   } else {
     Object.entries(exercises).forEach(([ex, data], idx) => {
+      // Normalise: new format has sets:[12,10], old has {reps,sets(number)}
+      const setsArr   = Array.isArray(data.sets) ? data.sets
+                        : Array.from({ length: data.sets || 1 },
+                            (_, i) => Math.round((data.reps || 0) / (data.sets || 1)));
+      const totalReps = setsArr.reduce((a, b) => a + b, 0);
+      const nSets     = setsArr.length;
+
+      const setRows = setsArr.map((r, i) =>
+        `<div class="flex justify-between text-xs px-2 py-1 rounded bg-white/[0.02] mt-1">
+           <span class="text-slate-500">Set ${i + 1}</span>
+           <span class="text-slate-300 font-semibold">${r} reps</span>
+         </div>`
+      ).join('');
+
       list.insertAdjacentHTML("beforeend", `
-        <div class="flex items-center justify-between p-3 rounded-xl border border-white/[0.07] bg-white/[0.03]"
+        <div class="p-3 rounded-xl border border-white/[0.07] bg-white/[0.03]"
              style="animation:fadeInUp 0.3s ease ${idx * 0.06}s both;">
-          <div>
+          <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold text-white">${ex}</div>
-            <div class="text-xs text-slate-500 mt-0.5">${data.sets} set${data.sets !== 1 ? "s" : ""}</div>
+            <div class="text-right">
+              <span class="text-xs font-bold text-emerald-400">${nSets} set${nSets !== 1 ? 's' : ''}</span>
+              <span class="text-xs text-slate-500 ml-1">· ${totalReps} reps</span>
+            </div>
           </div>
-          <div class="text-right">
-            <div class="text-lg font-extrabold text-emerald-400">${data.reps}</div>
-            <div class="text-xs text-slate-500">reps</div>
-          </div>
+          ${setRows}
         </div>
       `);
     });

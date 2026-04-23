@@ -327,7 +327,7 @@ async def get_history(username: str = Depends(_get_current_user)):
         DayWorkout(
             date=day,
             exercises={
-                ex: WorkoutEntry(reps=data["reps"], sets=data["sets"])
+                ex: WorkoutEntry(sets=db._entry_sets_list(data))
                 for ex, data in exercises.items()
             },
         )
@@ -341,12 +341,12 @@ async def get_stats(
     month: Optional[str] = None,
     username: str = Depends(_get_current_user),
 ):
-    """Return muscle-group reps aggregation for the given YYYY-MM month."""
+    """Return muscle-group set count aggregation for the given YYYY-MM month."""
     year_month  = month or datetime.now().strftime("%Y-%m")
     muscle_data = db.get_monthly_stats(username, year_month)
     stats = [
-        MuscleGroupStat(muscle_group=g, total_reps=r)
-        for g, r in muscle_data.items()
+        MuscleGroupStat(muscle_group=g, total_sets=s)
+        for g, s in muscle_data.items()
     ]
     return WorkoutStatsResponse(month=year_month, stats=stats)
 

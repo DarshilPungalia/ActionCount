@@ -117,7 +117,7 @@
         </div>
         <div class="glass p-4 text-center">
           <div class="text-2xl font-extrabold text-indigo-400" id="totalRepsMonth">—</div>
-          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Total Reps</div>
+          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Sets Performed</div>
         </div>
         <div class="glass p-4 text-center">
           <div class="text-2xl font-extrabold text-amber-400" id="topMuscle">—</div>
@@ -189,6 +189,19 @@
 </div>
 
 <script src="/static/js/api.js"></script>
+<script>
+  // Async auth guard — validate token against backend on every page load
+  (async function authGuard() {
+    if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+    try {
+      await apiFetch('/api/user/profile');
+      document.getElementById('usernameTag').textContent = Auth.username();
+    } catch (_) {
+      clearToken();
+      window.location.href = '/login';
+    }
+  })();
+</script>
 <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

@@ -289,16 +289,6 @@ class BaseCounter(ABC):
                         (bx1 - 8, bb + 22),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (190, 190, 200), 1)
 
-        # ── Rep counter (bottom-left box) ─────────────────────────────────────
-        cv2.rectangle(frame, (0, h - 105), (135, h), (18, 18, 28), cv2.FILLED)
-        cv2.rectangle(frame, (0, h - 105), (135, h), (60, 60, 90), 2)
-        cv2.putText(frame, "REPS",
-                    (10, h - 82),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (140, 140, 170), 1)
-        cv2.putText(frame, str(int(self.counter)),
-                    (12, h - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 255, 130), 5)
-
         # ── Feedback badge (top-left) ─────────────────────────────────────────
         badge_colours = {
             "Up":               (0, 230, 118),
