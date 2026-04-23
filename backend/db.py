@@ -90,6 +90,28 @@ def get_user(username: str) -> Optional[dict]:
     return users.get(username)
 
 
+def get_user_by_email(email: str) -> Optional[dict]:
+    """Find a user record by email address (email is used as unique identifier)."""
+    if not email:
+        return None
+    users = get_all_users()
+    for username, record in users.items():
+        if record.get("email", "").lower() == email.lower():
+            return record
+    return None
+
+
+def get_username_by_email(email: str) -> Optional[str]:
+    """Return the username (storage key) for a given email, or None if not found."""
+    if not email:
+        return None
+    users = get_all_users()
+    for username, record in users.items():
+        if record.get("email", "").lower() == email.lower():
+            return username
+    return None
+
+
 def create_user(username: str, hashed_password: str, email: Optional[str] = None) -> dict:
     _ensure_dirs()
     users = get_all_users()

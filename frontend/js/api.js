@@ -60,13 +60,19 @@ const Auth = {
     return data; // { access_token, is_new_user }
   },
 
-  async login(username, password) {
+  async login(email, password) {
     const data = await apiFetch("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ email, password }),
     });
     setToken(data.access_token);
-    localStorage.setItem("ac_username", username);
+    // Decode JWT to get the username (sub) for local storage
+    try {
+      const payload = JSON.parse(atob(data.access_token.split(".")[1]));
+      localStorage.setItem("ac_username", payload.sub || email);
+    } catch (_) {
+      localStorage.setItem("ac_username", email);
+    }
     return data;
   },
 

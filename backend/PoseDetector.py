@@ -20,14 +20,16 @@ _MAX_INFERENCE_DIM = 640
 
 class PoseDetectorModified:
     """
-    Pose detector backed by RTMPose via rtmlib.Wholebody.
+    Pose detector backed by RTMPose via rtmlib.Body (COCO-17 keypoints).
 
-    The public API is identical to the old MediaPipe version so every
-    exercise counter and app.py can keep working without changes:
+    Uses COCO-17 Body model — 17 keypoints, minimal overhead compared to
+    Wholebody (133 keypoints).  The public API is identical to the old
+    MediaPipe version so every exercise counter keeps working unchanged:
 
         findPose(img, draw=True)
-            Run RTMPose inference on the frame; optionally draw the COCO-17
-            skeleton.  Stores keypoints internally.  Returns the (annotated) img.
+            Run RTMPose Body inference on the frame; optionally draw the
+            COCO-17 skeleton.  Stores keypoints internally.  Returns the
+            (annotated) img.
 
         findPosition(img, draw=False)
             Return [[id, cx, cy, score], …] for all 17 COCO keypoints.
@@ -42,17 +44,40 @@ class PoseDetectorModified:
 
     def __init__(self, mode: str = "balanced",
                  backend: str = "onnxruntime",
-                 device: str = "cpu"):
+                 device: str = "auto"):
         """
         Args:
             mode    : "lightweight" | "balanced" | "performance"
             backend : "onnxruntime" | "opencv"
-            device  : "cpu" | "cuda"
+            device  : "auto" | "cuda" | "cpu"
+                      "auto" tries CUDA first and silently falls back to CPU
+                      if CUDA is unavailable (no GPU, missing driver, ORT
+                      not built with CUDA support).
         """
-        from rtmlib import Wholebody  
-        self._model     = Wholebody(mode=mode, backend=backend, device=device)
-        self._keypoints = None   
-        self._scores    = None      
+        import warnings
+        from rtmlib import Body
+
+        # ── CUDA → CPU auto-detect ────────────────────────────────────────────
+        resolved_device = device
+        if device == "auto":
+            resolved_device = "cuda"   # optimistic first try
+
+        try:
+            self._model = Body(mode=mode, backend=backend, device=resolved_device)
+        except Exception as cuda_err:
+            if resolved_device == "cuda":
+                warnings.warn(
+                    f"[PoseDetector] CUDA unavailable ({cuda_err!r}); "
+                    "falling back to CPU.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._model = Body(mode=mode, backend=backend, device="cpu")
+            else:
+                raise   # unexpected error on explicit cpu — re-raise
+
+        self._keypoints = None   # shape (17, 2) float32 or None
+        self._scores    = None   # shape (17,)  float32 or None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public API
@@ -103,7 +128,7 @@ class PoseDetectorModified:
 
     def findPosition(self, img: np.ndarray, draw: bool = False) -> list:
         """
-        Return [[id, cx, cy, score], …] for all 17 COCO keypoints.
+        Return [[id, cx, cy, score], …] for the 17 COCO-Body keypoints.
 
         The 4th element (score) is read by findAngle to skip low-confidence
         joints — no manual filtering needed by the caller.
@@ -112,7 +137,11 @@ class PoseDetectorModified:
         if self._keypoints is None:
             return landmarks_list
 
-        for idx, (pt, score) in enumerate(zip(self._keypoints, self._scores)):
+        # Explicitly cap to 17 keypoints in case model returns more
+        kps    = self._keypoints[:17]
+        scores = self._scores[:17]
+
+        for idx, (pt, score) in enumerate(zip(kps, scores)):
             cx, cy = int(pt[0]), int(pt[1])
             landmarks_list.append([idx, cx, cy, float(score)])
             if draw and score >= _CONF_THRESHOLD:
@@ -168,14 +197,23 @@ class PoseDetectorModified:
 
     def _draw_skeleton(self, img: np.ndarray,
                        kps: np.ndarray, scores: np.ndarray):
-        """Draw COCO-17 bones and keypoint dots onto img in-place."""
+        """Draw COCO-17 Body bones and keypoint dots onto img in-place.
+
+        Explicitly sliced to [:17] so this is safe even if the underlying
+        model returns a larger array (e.g. during a model swap).
+        """
+        kps17    = kps[:17]
+        scores17 = scores[:17]
+
+        # Draw limb connections
         for i, j in _COCO_SKELETON:
-            if scores[i] >= _CONF_THRESHOLD and scores[j] >= _CONF_THRESHOLD:
-                pt1 = (int(kps[i][0]), int(kps[i][1]))
-                pt2 = (int(kps[j][0]), int(kps[j][1]))
+            if scores17[i] >= _CONF_THRESHOLD and scores17[j] >= _CONF_THRESHOLD:
+                pt1 = (int(kps17[i][0]), int(kps17[i][1]))
+                pt2 = (int(kps17[j][0]), int(kps17[j][1]))
                 cv2.line(img, pt1, pt2, (0, 255, 0), 2)
 
-        for pt, score in zip(kps, scores):
+        # Draw keypoint dots — only the 17 COCO Body points
+        for pt, score in zip(kps17, scores17):
             if score >= _CONF_THRESHOLD:
                 cv2.circle(img, (int(pt[0]), int(pt[1])), 4, (0, 0, 255), cv2.FILLED)
 

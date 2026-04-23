@@ -36,16 +36,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── Auth helpers (bcrypt via passlib) ─────────────────────────────────────────
+# ── Auth helpers (Argon2 via passlib) ────────────────────────────────────────
 from passlib.context import CryptContext
 from jose import jwt, JWTError
 
 SECRET_KEY = os.getenv("SECRET_KEY", "fallback-secret")
 ALGORITHM  = os.getenv("ALGORITHM", "HS256")
-_pwd_ctx   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+_pwd_ctx   = CryptContext(schemes=["argon2"], deprecated="auto")
 
 def _hash_pw(p): return _pwd_ctx.hash(p)
 def _verify_pw(p, h): return _pwd_ctx.verify(p, h)
+
+
+def _password_strength(p: str) -> tuple[str, str]:
+    """Return (label, colour) for the password strength meter."""
+    score = 0
+    if len(p) >= 12: score += 1
+    if len(p) >= 16: score += 1
+    if any(c.isupper() for c in p): score += 1
+    if any(c.islower() for c in p): score += 1
+    if any(c.isdigit() for c in p): score += 1
+    if any(c in '!@#$%^&*()-_=+[]{}|;:\'",./<>?' for c in p): score += 1
+    if score <= 1:   return "Weak",        "#ef4444"
+    if score <= 2:   return "Fair",        "#f59e0b"
+    if score <= 3:   return "Good",        "#eab308"
+    if score <= 4:   return "Strong",      "#10b981"
+    return             "Very Strong",  "#6366f1"
 
 # ── Exercise registry ──────────────────────────────────────────────────────────
 EXERCISES = {
@@ -158,43 +174,90 @@ def render_login_page():
     with col:
         tab_login, tab_signup = st.tabs(["Sign In", "Create Account"])
 
+        # ── Sign In ────────────────────────────────────────────────────────────
         with tab_login:
             with st.form("login_form"):
-                user = st.text_input("Username", placeholder="your_username")
-                pwd  = st.text_input("Password", type="password", placeholder="••••••••")
+                login_email = st.text_input("Email", placeholder="you@example.com", key="li_email")
+                login_pwd   = st.text_input("Password", type="password",
+                                            placeholder="Enter a Password", key="li_pwd")
                 submitted = st.form_submit_button("Sign In", use_container_width=True)
                 if submitted:
-                    if not user or not pwd:
+                    if not login_email or not login_pwd:
                         st.error("Please fill in all fields.")
                     else:
-                        _do_login(user, pwd)
+                        _do_login(login_email, login_pwd)
 
+        # ── Create Account ─────────────────────────────────────────────────────
         with tab_signup:
-            with st.form("signup_form"):
-                new_user  = st.text_input("Username", placeholder="choose_a_username", key="su_user")
-                new_email = st.text_input("Email (optional)", placeholder="you@example.com", key="su_email")
-                new_pwd   = st.text_input("Password", type="password",
-                                          placeholder="Min. 6 characters", key="su_pwd")
+            # Password-rules hover tooltip (CSS-only, works in st.markdown)
+            st.markdown("""<style>
+._pwi{display:inline-block;position:relative;cursor:help;vertical-align:middle;}
+._pwi ._pwt{display:none;position:absolute;left:20px;top:-6px;z-index:9999;
+    background:#1e293b;border:1px solid rgba(255,255,255,.12);border-radius:8px;
+    padding:10px 13px;width:215px;font-size:.7rem;line-height:1.65;
+    color:#cbd5e1;white-space:normal;box-shadow:0 8px 32px rgba(0,0,0,.5);}
+._pwi:hover ._pwt{display:block;}
+._pwib{display:inline-flex;align-items:center;justify-content:center;
+    width:14px;height:14px;border-radius:50%;border:1px solid #6b7280;
+    color:#6b7280;font-size:9px;font-weight:700;line-height:1;user-select:none;}
+</style>
+<span class="_pwi">
+  <span class="_pwib">i</span>
+  <span class="_pwt">
+    <strong style="color:#a5b4fc;display:block;margin-bottom:4px;">Password must include:</strong>
+    &bull; At least 12 characters<br>
+    &bull; One uppercase letter (A&ndash;Z)<br>
+    &bull; One lowercase letter (a&ndash;z)<br>
+    &bull; One digit (0&ndash;9)<br>
+    &bull; One special character (!@#$&amp;&hellip;)
+  </span>
+</span>
+<span style="font-size:0.73rem;color:#6b7280;margin-left:5px;">
+  Hover <b>i</b> to see password rules
+</span>""", unsafe_allow_html=True)
+
+            with st.form("signup_form", clear_on_submit=False):
+                new_user  = st.text_input("Username", placeholder="Enter a Username", key="su_user")
+                new_email = st.text_input("Email *",   placeholder="you@example.com",  key="su_email")
+                new_pwd   = st.text_input(
+                    "Password *", type="password",
+                    placeholder="Enter a Password",
+                    key="su_pwd",
+                    help="Min 12 chars · uppercase · digit · special character",
+                )
                 submitted2 = st.form_submit_button("Create Account", use_container_width=True)
-                if submitted2:
-                    if not new_user or not new_pwd:
-                        st.error("Username and password are required.")
-                    elif len(new_pwd) < 6:
-                        st.error("Password must be at least 6 characters.")
-                    elif db.get_user(new_user):
-                        st.error("Username already taken.")
-                    else:
-                        db.create_user(new_user, _hash_pw(new_pwd), new_email)
-                        st.session_state.username   = new_user
-                        st.session_state.logged_in  = True
-                        st.session_state.onboarding_done = False
-                        st.rerun()
 
+            if submitted2:
+                if not new_user or not new_email or not new_pwd:
+                    st.error("Username, email and password are all required.")
+                elif len(new_pwd) < 12:
+                    st.error("Password must be at least 12 characters.")
+                elif not any(c.isupper() for c in new_pwd):
+                    st.error("Password must contain at least one uppercase letter.")
+                elif not any(c.isdigit() for c in new_pwd):
+                    st.error("Password must contain at least one digit.")
+                elif not any(c in '!@#$%^&*()-_=+[]{}|;:\'",./\\<>?' for c in new_pwd):
+                    st.error("Password must contain at least one special character.")
+                elif db.get_user(new_user):
+                    st.error("Username already taken. Please choose a different one.")
+                elif db.get_user_by_email(new_email):
+                    st.error("An account with this email already exists. Try signing in instead.")
+                else:
+                    db.create_user(new_user, _hash_pw(new_pwd), new_email)
+                    st.session_state.username        = new_user
+                    st.session_state.logged_in       = True
+                    st.session_state.onboarding_done = False
+                    st.rerun()
 
-def _do_login(username, password):
+def _do_login(email: str, password: str):
+    """Look up user by email, verify password, set session state."""
+    username = db.get_username_by_email(email)
+    if username is None:
+        st.error("Incorrect email or password.")
+        return
     user = db.get_user(username)
     if not user or not _verify_pw(password, user["hashed_password"]):
-        st.error("Incorrect username or password.")
+        st.error("Incorrect email or password.")
         return
     st.session_state.username        = username
     st.session_state.logged_in       = True

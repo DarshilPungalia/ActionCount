@@ -117,6 +117,30 @@
       border-color: rgba(99,102,241,0.5);
       color: #a5b4fc;
     }
+
+    /* Password info tooltip */
+    .info-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 14px; height: 14px; border-radius: 50%;
+      border: 1px solid #6b7280; color: #6b7280;
+      font-size: 9px; font-weight: 700; cursor: help;
+      position: relative; flex-shrink: 0; line-height: 1;
+      vertical-align: middle; margin-left: 4px;
+      user-select: none;
+    }
+    .info-btn:hover .pw-rules-tooltip { opacity: 1; pointer-events: auto; transform: translateY(0); }
+    .pw-rules-tooltip {
+      position: absolute; left: 20px; top: -6px;
+      background: #1e293b; border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 10px; padding: 11px 14px;
+      width: 220px; font-size: 0.7rem; line-height: 1.65;
+      color: #cbd5e1; opacity: 0; pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      transform: translateY(-4px); z-index: 999; white-space: normal;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .pw-rules-tooltip ul { padding-left: 14px; margin-top: 6px; }
+    .pw-rules-tooltip li { margin-bottom: 3px; }
   </style>
 </head>
 <body class="bg-animated min-h-screen flex items-center justify-center p-4">
@@ -149,13 +173,13 @@
 
           <form id="loginForm" class="space-y-4" novalidate>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
-              <input id="loginUser" type="text" class="input-field" placeholder="your_username" autocomplete="username" required />
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Email</label>
+              <input id="loginEmail" type="email" class="input-field" placeholder="you@example.com" autocomplete="email" required />
             </div>
             <div>
               <label class="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
               <div class="relative">
-                <input id="loginPass" type="password" class="input-field pr-10" placeholder="••••••••" autocomplete="current-password" required />
+                <input id="loginPass" type="password" class="input-field pr-10" placeholder="Enter a Password" autocomplete="current-password" required />
                 <button type="button" onclick="togglePass('loginPass',this)"
                   class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">
                   👁
@@ -182,20 +206,46 @@
           <form id="signupForm" class="space-y-4" novalidate>
             <div>
               <label class="block text-xs font-medium text-slate-400 mb-1.5">Username</label>
-              <input id="signupUser" type="text" class="input-field" placeholder="choose_a_username" autocomplete="username" required />
+              <input id="signupUser" type="text" class="input-field" placeholder="Enter a Username" autocomplete="username" required />
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1.5">Email (optional)</label>
-              <input id="signupEmail" type="email" class="input-field" placeholder="you@example.com" />
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">Email <span class="text-red-400">*</span></label>
+              <input id="signupEmail" type="email" class="input-field" placeholder="you@example.com" autocomplete="email" required />
             </div>
             <div>
-              <label class="block text-xs font-medium text-slate-400 mb-1.5">Password</label>
+              <label class="block text-xs font-medium text-slate-400 mb-1.5">
+                Password <span class="text-red-400">*</span>
+                <span class="info-btn">i
+                  <span class="pw-rules-tooltip">
+                    <strong style="color:#a5b4fc;">Password must include:</strong>
+                    <ul>
+                      <li>At least 12 characters</li>
+                      <li>One uppercase letter (A&ndash;Z)</li>
+                      <li>One lowercase letter (a&ndash;z)</li>
+                      <li>One digit (0&ndash;9)</li>
+                      <li>One special character (!@#$&amp;&hellip;)</li>
+                    </ul>
+                  </span>
+                </span>
+              </label>
               <div class="relative">
-                <input id="signupPass" type="password" class="input-field pr-10" placeholder="Min. 6 characters" autocomplete="new-password" required />
+                <input id="signupPass" type="password" class="input-field pr-10"
+                  placeholder="Enter a Password"
+                  autocomplete="new-password" required />
                 <button type="button" onclick="togglePass('signupPass',this)"
                   class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-sm">
                   👁
                 </button>
+              </div>
+              <!-- Password strength meter -->
+              <div id="pwStrengthWrap" style="display:none;margin-top:8px;">
+                <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+                  <span style="font-size:0.68rem;color:#6b7280;">Password Strength</span>
+                  <span id="pwStrengthLabel" style="font-size:0.68rem;font-weight:700;"></span>
+                </div>
+                <div style="background:rgba(255,255,255,0.07);border-radius:999px;height:6px;overflow:hidden;">
+                  <div id="pwStrengthBar" style="height:100%;border-radius:999px;width:0%;transition:width 0.35s ease,background 0.35s ease;"></div>
+                </div>
               </div>
             </div>
 

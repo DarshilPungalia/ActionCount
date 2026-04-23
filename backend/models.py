@@ -13,12 +13,12 @@ from pydantic import BaseModel, Field
 
 class SignupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
-    password: str = Field(..., min_length=6)
-    email: Optional[str] = None
+    password: str = Field(..., min_length=12, description="Minimum 12 chars, must include upper, digit and symbol")
+    email: str = Field(..., description="Required — used as the unique account identifier")
 
 
 class LoginRequest(BaseModel):
-    username: str
+    email:    str
     password: str
 
 

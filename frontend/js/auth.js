@@ -33,16 +33,58 @@ function clearError(id) {
   el.classList.add("hidden");
 }
 
+// ── Password Strength Meter ────────────────────────────────────────────────────
+function calcPasswordStrength(p) {
+  let score = 0;
+  if (p.length >= 12) score++;
+  if (p.length >= 16) score++;
+  if (/[A-Z]/.test(p)) score++;
+  if (/[a-z]/.test(p)) score++;
+  if (/[0-9]/.test(p)) score++;
+  if (/[^A-Za-z0-9]/.test(p)) score++;
+  const levels = [
+    { max: 1,  label: "Weak",        color: "#ef4444", pct: 16  },
+    { max: 2,  label: "Fair",        color: "#f97316", pct: 32  },
+    { max: 3,  label: "Good",        color: "#eab308", pct: 52  },
+    { max: 4,  label: "Strong",      color: "#10b981", pct: 75  },
+    { max: 99, label: "Very Strong", color: "#6366f1", pct: 100 },
+  ];
+  return levels.find(l => score <= l.max) || levels[levels.length - 1];
+}
+
+(function wireStrengthMeter() {
+  const passEl = document.getElementById("signupPass");
+  if (!passEl) return;
+  passEl.addEventListener("input", () => {
+    const val  = passEl.value;
+    const wrap = document.getElementById("pwStrengthWrap");
+    const bar  = document.getElementById("pwStrengthBar");
+    const lbl  = document.getElementById("pwStrengthLabel");
+    if (!val) { wrap.style.display = "none"; return; }
+    wrap.style.display = "block";
+    const { label, color, pct } = calcPasswordStrength(val);
+    // Gradient always starts red, ends at current strength colour
+    bar.style.width      = pct + "%";
+    bar.style.background = `linear-gradient(90deg, #ef4444 0%, ${color} 100%)`;
+    lbl.textContent      = label;
+    lbl.style.color      = color;
+  });
+})();
+
 // ── Login ─────────────────────────────────────────────────────────────────────
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   clearError("loginError");
-  const btn  = document.getElementById("loginBtn");
-  const user = document.getElementById("loginUser").value.trim();
-  const pass = document.getElementById("loginPass").value;
+  const btn   = document.getElementById("loginBtn");
+  const email = document.getElementById("loginEmail").value.trim();
+  const pass  = document.getElementById("loginPass").value;
 
-  if (!user || !pass) {
-    showError("loginError", "Please enter your username and password.");
+  if (!email || !pass) {
+    showError("loginError", "Please enter your email and password.");
+    return;
+  }
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showError("loginError", "Please enter a valid email address.");
     return;
   }
 
@@ -50,7 +92,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   btn.textContent = "Signing in…";
 
   try {
-    const data = await Auth.login(user, pass);
+    const data = await Auth.login(email, pass);
     if (data.is_new_user) {
       showOnboarding();
     } else {
@@ -73,12 +115,28 @@ document.getElementById("signupForm").addEventListener("submit", async (e) => {
   const email = document.getElementById("signupEmail").value.trim();
   const pass  = document.getElementById("signupPass").value;
 
-  if (!user || !pass) {
-    showError("signupError", "Username and password are required.");
+  if (!user || !pass || !email) {
+    showError("signupError", "Username, email and password are all required.");
     return;
   }
-  if (pass.length < 6) {
-    showError("signupError", "Password must be at least 6 characters.");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    showError("signupError", "Please enter a valid email address.");
+    return;
+  }
+  if (pass.length < 12) {
+    showError("signupError", "Password must be at least 12 characters long.");
+    return;
+  }
+  if (!/[A-Z]/.test(pass)) {
+    showError("signupError", "Password must contain at least one uppercase letter.");
+    return;
+  }
+  if (!/[0-9]/.test(pass)) {
+    showError("signupError", "Password must contain at least one digit.");
+    return;
+  }
+  if (!/[^A-Za-z0-9]/.test(pass)) {
+    showError("signupError", "Password must contain at least one special character.");
     return;
   }
 

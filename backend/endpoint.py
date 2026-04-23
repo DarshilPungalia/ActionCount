@@ -87,7 +87,7 @@ from backend.models import (                        # noqa: E402
 )
 
 # ── Security helpers ──────────────────────────────────────────────────────────
-pwd_context   = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context   = CryptContext(schemes=["argon2"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 
@@ -258,6 +258,8 @@ async def signup(body: SignupRequest):
     """Create a new user account. Returns a JWT token immediately."""
     if db.get_user(body.username):
         raise HTTPException(status_code=409, detail="Username already exists.")
+    if body.email and db.get_user_by_email(body.email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
 
     hashed = _hash_password(body.password)
     db.create_user(body.username, hashed, body.email)
@@ -268,14 +270,20 @@ async def signup(body: SignupRequest):
 
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(body: LoginRequest):
-    """Authenticate and return a JWT token."""
-    user = db.get_user(body.username)
+    """Authenticate via email + password and return a JWT token."""
+    username = db.get_username_by_email(body.email)
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+        )
+    user = db.get_user(username)
     if not user or not _verify_password(body.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password.",
+            detail="Incorrect email or password.",
         )
-    token = _create_access_token({"sub": body.username})
+    token = _create_access_token({"sub": username})
     is_new = not user.get("onboarding_complete", False)
     return TokenResponse(access_token=token, token_type="bearer", is_new_user=is_new)
 

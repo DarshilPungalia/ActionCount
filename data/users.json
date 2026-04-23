@@ -1,0 +1,34 @@
+{
+  "PrinceDastan": {
+    "hashed_password": "$argon2id$v=19$m=65536,t=3,p=4$AiCE0HqP8Z5zrtUaQ0jpHQ$HEn11SIo5mMpFRqD0okS2ckBAORfvtJRIcBnC8iP9bI",
+    "email": "pungaliapd@gmail.com",
+    "profile": {
+      "weight_kg": 80.0,
+      "height_cm": 178.0,
+      "age": 21,
+      "gender": "male",
+      "target": "weight_loss",
+      "dietary_restrictions": [
+        "vegetarian"
+      ]
+    },
+    "onboarding_complete": true,
+    "created_at": "2026-04-23T04:43:22.014146"
+  },
+  "Prince": {
+    "hashed_password": "$argon2id$v=19$m=65536,t=3,p=4$2fufcw5hrBUCQIhxTknJ+Q$9Y7Sm66LavYxjVIgzqcPYYLH2GIMchm9cMCcbnyVJxk",
+    "email": "darshilpungaliapd@gmail.com",
+    "profile": {
+      "weight_kg": 58.0,
+      "height_cm": 180.0,
+      "age": 22,
+      "gender": "male",
+      "target": "muscle_gain",
+      "dietary_restrictions": [
+        "vegetarian"
+      ]
+    },
+    "onboarding_complete": true,
+    "created_at": "2026-04-23T05:25:11.055243"
+  }
+}
