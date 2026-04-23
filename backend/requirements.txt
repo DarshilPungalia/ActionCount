@@ -7,7 +7,7 @@ python-multipart
 
 # Pose estimation
 rtmlib
-onnxruntime
+onnxruntime-gpu
 opencv-python
 numpy
 
@@ -16,6 +16,9 @@ python-jose[cryptography]
 passlib[argon2]
 argon2-cffi
 python-dotenv
+
+# Database
+pymongo[srv]
 
 # Streamlit UI
 streamlit

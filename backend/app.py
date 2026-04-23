@@ -26,7 +26,8 @@ from backend.counters.CrunchCounter import CrunchCounter
 from backend.counters.LegRaiseCounter import LegRaiseCounter
 from backend.counters.KneeRaiseCounter import KneeRaiseCounter
 from backend.counters.KneePressCounter import KneePressCounter
-from backend import db
+from backend.utils import db
+from backend.utils.chatbot import _get_response
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -875,45 +876,6 @@ def _render_muscle_chart(muscle_stats):
 # AI CHATBOT PAGE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _get_ai_response(username: str, message: str) -> str:
-    api_key = os.getenv("GOOGLE_API_KEY", "")
-    if not api_key:
-        return "⚠️ GOOGLE_API_KEY not set in .env file."
-    try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-
-        profile = db.get_user_profile(username) or {}
-        history = db.load_chat_history(username)
-
-        target_map = {"weight_loss": "Weight Loss", "muscle_gain": "Muscle Gain",
-                      "endurance": "Building Endurance", "general_fitness": "General Fitness"}
-        restrictions = ", ".join(profile.get("dietary_restrictions", [])) or "None"
-
-        system = (
-            "You are ActionBot, a personalized fitness and nutrition AI. "
-            "Provide evidence-based dietary and fitness advice tailored to the user's profile.\n\n"
-            f"User Profile:\n"
-            f"  Age: {profile.get('age','?')}, Gender: {profile.get('gender','?')}, "
-            f"  Weight: {profile.get('weight_kg','?')}kg, Height: {profile.get('height_cm','?')}cm\n"
-            f"  Goal: {target_map.get(profile.get('target',''),'General Fitness')}\n"
-            f"  Dietary Restrictions: {restrictions}\n\n"
-            "Always respect dietary restrictions. Be concise, friendly, and practical. "
-            "Include specific quantities and macros in meal plans."
-        )
-
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=api_key,
-                                     temperature=0.7)
-        msgs = [SystemMessage(content=system)]
-        for m in history[-20:]:
-            msgs.append(HumanMessage(content=m["content"]) if m["role"] == "user"
-                        else AIMessage(content=m["content"]))
-        msgs.append(HumanMessage(content=message))
-        return llm.invoke(msgs).content
-    except Exception as e:
-        return f"⚠️ AI error: {e}"
-
-
 def render_chatbot_page():
     st.markdown("""
     <h1 style="font-size:2rem;font-weight:800;color:#f1f5f9;margin-bottom:4px;">🤖 AI Diet Coach</h1>
@@ -978,7 +940,7 @@ def _send_chat_message(username, message):
     db.append_chat_message(username, "user", message)
     st.session_state.chat_history.append({"role": "user", "content": message})
     with st.spinner("ActionBot is thinking…"):
-        reply = _get_ai_response(username, message)
+        reply = _get_response(username, message)
     db.append_chat_message(username, "assistant", reply)
     st.session_state.chat_history.append({"role": "assistant", "content": reply})
 

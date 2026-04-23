@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from abc import ABC, abstractmethod
 from collections import deque
-from backend.PoseDetector import PoseDetectorModified
+from backend.detector.PoseDetector import PoseDetectorModified
 
 
 class BaseCounter(ABC):

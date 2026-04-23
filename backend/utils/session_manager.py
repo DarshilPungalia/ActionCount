@@ -2,33 +2,6 @@
 session_manager.py
 ------------------
 Singleton that manages per-session counter lifecycles.
-
-Phase 2 refactor (video_pipeline_implementation_plan.md):
-- Added AtomicFrame   : single-slot lock for latest raw frame
-- Added AtomicResult  : single-slot lock for latest inference result
-- Added InferenceWorker : daemon thread that decouples RTMPose from the WS loop
-- SessionData now starts one InferenceWorker per session
-- SessionManager.destroy() signals the worker to stop before removing the session
-
-Anti-patterns fixed
--------------------
-  ✅ Sequential capture → infer → send in one async loop  →  infer now runs in a thread
-  ✅ np.copy() inside hot loop (kps_raw)                  →  .copy() removed; astype()
-                                                              already allocates a new array
-
-File-Level Change Log (plan format)
-------------------------------------
-### session_manager.py
-
-**Anti-pattern found:** Inference (RTMPose + counter) blocked the WebSocket receive/send
-  loop, forcing every frame to wait for model output before the next frame was accepted.
-
-**Change made:** Moved inference into InferenceWorker (daemon thread). WebSocket loop
-  writes each decoded frame to AtomicFrame (non-blocking overwrite) and reads the latest
-  result from AtomicResult without waiting.
-
-**Latency impact:** WebSocket receive/send loop is no longer gated by inference time
-  (~50–200 ms per frame). Client-visible round-trip drops to network RTT + JPEG decode.
 """
 
 from __future__ import annotations
@@ -40,7 +13,13 @@ import sys
 import os
 from typing import Optional
 
-from backend.metrics import PipelineMetrics
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+root_dir    = os.path.dirname(backend_dir)
+for p in (backend_dir, root_dir):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from backend.logger.metrics import PipelineMetrics
 
 # ── Helper: _kps_to_list (same as endpoint.py, duplicated to avoid circular import) ──
 def _kps_to_list(kps) -> list:
@@ -55,36 +34,30 @@ def _load_counter_map():
     if _COUNTER_MAP:
         return
 
-    backend_dir = os.path.dirname(os.path.abspath(__file__))
-    root_dir    = os.path.dirname(backend_dir)
-    for p in (backend_dir, root_dir):
-        if p not in sys.path:
-            sys.path.insert(0, p)
-
-    from backend.counters.SquatCounter         import SquatCounter
-    from backend.counters.PushupCounter        import PushupCounter
-    from backend.counters.BicepCurlCounter     import BicepCurlCounter
-    from backend.counters.PullupCounter        import PullupCounter
-    from backend.counters.LateralRaiseCounter  import LateralRaiseCounter
+    from backend.counters.SquatCounter import SquatCounter
+    from backend.counters.PushupCounter import PushupCounter
+    from backend.counters.BicepCurlCounter import BicepCurlCounter
+    from backend.counters.PullupCounter import PullupCounter
+    from backend.counters.LateralRaiseCounter import LateralRaiseCounter
     from backend.counters.OverheadPressCounter import OverheadPressCounter
-    from backend.counters.SitupCounter         import SitupCounter
-    from backend.counters.CrunchCounter        import CrunchCounter
-    from backend.counters.LegRaiseCounter      import LegRaiseCounter
-    from backend.counters.KneeRaiseCounter     import KneeRaiseCounter
-    from backend.counters.KneePressCounter     import KneePressCounter
+    from backend.counters.SitupCounter import SitupCounter
+    from backend.counters.CrunchCounter import CrunchCounter
+    from backend.counters.LegRaiseCounter import LegRaiseCounter
+    from backend.counters.KneeRaiseCounter import KneeRaiseCounter
+    from backend.counters.KneePressCounter import KneePressCounter
 
     _COUNTER_MAP = {
-        "squat":          SquatCounter,
-        "pushup":         PushupCounter,
-        "bicep_curl":     BicepCurlCounter,
-        "pullup":         PullupCounter,
-        "lateral_raise":  LateralRaiseCounter,
+        "squat": SquatCounter,
+        "pushup": PushupCounter,
+        "bicep_curl": BicepCurlCounter,
+        "pullup": PullupCounter,
+        "lateral_raise": LateralRaiseCounter,
         "overhead_press": OverheadPressCounter,
-        "situp":          SitupCounter,
-        "crunch":         CrunchCounter,
-        "leg_raise":      LegRaiseCounter,
-        "knee_raise":     KneeRaiseCounter,
-        "knee_press":     KneePressCounter,
+        "situp": SitupCounter,
+        "crunch": CrunchCounter,
+        "leg_raise": LegRaiseCounter,
+        "knee_raise": KneeRaiseCounter,
+        "knee_press": KneePressCounter,
     }
 
 
