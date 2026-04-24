@@ -96,15 +96,31 @@ function pushSegment(datasets, seg, color) {
 }
 
 function makeChartConfig(datasets, ylabel) {
+  // Format date strings as "Apr 23" for the x-axis labels
+  const allDates = [...new Set(datasets.flatMap(d => d.data.map(p => p.x)))].sort();
+  const labels = allDates.map(d => {
+    const [y, m, day] = d.split("-").map(Number);
+    return new Date(y, m - 1, day).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  });
+
+  // Remap dataset x-values to category indices
+  const mappedDatasets = datasets.map(ds => ({
+    ...ds,
+    data: ds.data.map(p => ({
+      x: new Date(...p.x.split("-").map((n, i) => i === 1 ? Number(n) - 1 : Number(n))).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      y: p.y,
+    })),
+  }));
+
   return {
     type: "scatter",
-    data: { datasets },
+    data: { labels, datasets: mappedDatasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       scales: {
         x: {
-          type: "time",
-          time: { unit: "day", tooltipFormat: "MMM d, yyyy", displayFormats: { day: "MMM d" } },
+          type: "category",
+          labels,
           grid: { display: false },
           ticks: { color: "#9ca3af", maxRotation: 30, font: { size: 11 } },
         },
@@ -177,8 +193,5 @@ function showToast(msg, isError = false) {
   setTimeout(() => t.classList.remove("show"), 3500);
 }
 
-// Chart.js date adapter (needed for time scale)
-const script = document.createElement("script");
-script.src = "https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js";
-script.onload = () => loadAndRender();
-document.head.appendChild(script);
+// Load data on page start (no date-fns adapter needed for category scale)
+loadAndRender();

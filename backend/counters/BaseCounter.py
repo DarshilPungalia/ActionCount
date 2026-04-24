@@ -313,4 +313,3 @@ class BaseCounter(ABC):
               feedback     (str)   — "Up" | "Down" | "Fix Form" | "Get in Position"
               form_ok      (bool)  — True if current frame has valid starting form
         """
-        ...

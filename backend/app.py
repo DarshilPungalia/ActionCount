@@ -99,6 +99,31 @@ FEEDBACK_COLOUR  = {"Up": "#10b981", "Down": "#3b82f6", "Fix Form": "#ef4444", "
 MUSCLE_COLOURS   = {"Arms": "#6366f1", "Chest": "#ef4444", "Back": "#f59e0b",
                     "Legs": "#10b981", "Shoulders": "#3b82f6", "Core": "#8b5cf6"}
 
+BASE_MET = {
+    "Bicep Curl":     3.0,
+    "Push-Up":        8.0,
+    "Pull-Up":        9.0,
+    "Squat":          5.5,
+    "Lateral Raise":  3.0,
+    "Overhead Press": 4.5,
+    "Sit-Up":         4.0,
+    "Crunch":         3.8,
+    "Leg Raise":      3.5,
+    "Knee Raise":     3.5,
+    "Knee Press":     4.0,
+}
+
+def _calc_calories(display_name: str, reps: int, set_time_s: float,
+                   body_weight_kg: float, lifted_weight_kg: float) -> float:
+    """Standard MET calorie formula with weight adjustment."""
+    if body_weight_kg <= 0 or set_time_s <= 0:
+        return 0.0
+    base = BASE_MET.get(display_name, 4.0)
+    ratio = (lifted_weight_kg / body_weight_kg) * 0.2 if body_weight_kg > 0 else 0.0
+    adjusted_met = base * (1.0 + ratio)
+    set_time_h = set_time_s / 3600.0
+    return round(adjusted_met * body_weight_kg * set_time_h, 2)
+
 st.set_page_config(page_title="ActionCount", page_icon="🏋️", layout="wide",
                    initial_sidebar_state="expanded")
 
@@ -525,9 +550,17 @@ def _render_webcam(exercise_name):
         )
         st.session_state["_webcam_weight_kg"] = weight_kg
 
-        # Save Set button at the TOP for quick access — no scrolling needed
-        reps = int(st.session_state.counter_obj.counter) if st.session_state.counter_obj else 0
+        # Save Set button at the TOP for quick access — reads live stats
         _, display_name = EXERCISES[exercise_name]
+
+        # Form feedback and progress below the save button
+        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
+        if ctx.state.playing and ctx.video_processor:
+            stats = ctx.video_processor.get_stats()
+        reps = int(stats.get("counter", 0))
+
+        fb_colour = FEEDBACK_COLOUR.get(stats["feedback"], "#9ca3af")
+        fb_emoji  = FEEDBACK_EMOJI.get(stats["feedback"], "")
         st.markdown(f"""
         <div class="stat-card" style="border-color:rgba(16,185,129,0.35);text-align:center;margin-bottom:8px;">
             <div class="stat-label">Reps This Session</div>
@@ -538,21 +571,22 @@ def _render_webcam(exercise_name):
             st.caption(f"📦 Volume: {reps} × {weight_kg}kg = **{volume_preview:.1f} kg**")
         if st.button(f"✅ Save Set ({reps} reps)", use_container_width=True,
                      type="primary", disabled=(reps == 0), key="save_set_top"):
+            # Estimate set time: ~3s per rep (reasonable default for Streamlit)
+            est_set_time_s = reps * 3.0
+            user_profile = db.get_user_profile(st.session_state.username) or {}
+            body_weight  = float(user_profile.get("weight_kg", 70.0))
+            cal = _calc_calories(display_name, reps, est_set_time_s, body_weight, weight_kg)
             db.save_workout(st.session_state.username, display_name, reps, 1,
-                            weight_kg=weight_kg if weight_kg > 0 else None)
-            st.toast(f"Saved {reps} reps of {display_name}!", icon="💾")
+                            weight_kg=weight_kg if weight_kg > 0 else None,
+                            calories_burnt=cal if cal > 0 else None)
+            cal_str = f" · ~{cal:.0f} kcal" if cal > 0 else ""
+            st.toast(f"Saved {reps} reps of {display_name}{cal_str}!", icon="💾")
+            if cal > 0:
+                st.session_state["_last_set_calories"] = cal
             if st.session_state.counter_obj:
                 st.session_state.counter_obj.reset()
 
         st.divider()
-
-        # Form feedback and progress below the save button
-        stats = {"counter": 0, "feedback": "Get in Position", "progress": 0.0, "correct_form": False}
-        if ctx.state.playing and ctx.video_processor:
-            stats = ctx.video_processor.get_stats()
-
-        fb_colour = FEEDBACK_COLOUR.get(stats["feedback"], "#9ca3af")
-        fb_emoji  = FEEDBACK_EMOJI.get(stats["feedback"], "")
         st.markdown(f"""
         <div class="stat-card" style="border-color:{fb_colour}44;">
             <div class="stat-label">Form Feedback</div>
@@ -565,7 +599,10 @@ def _render_webcam(exercise_name):
         else:
             st.info("📍 Get in Position")
 
-        if st.button("🔄 Refresh Stats", use_container_width=True):
+        # Auto-refresh every 1 second while camera is active
+        import time as _t
+        if ctx.state.playing:
+            _t.sleep(1)
             st.rerun()
 
 
@@ -640,13 +677,21 @@ def _render_upload(exercise_name):
 
         cap   = cv2.VideoCapture(tmp_path)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         idx   = 0
+        rep_timestamps = []   # track time when each rep is completed
+        last_count = 0
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
                 result = obj.process_frame(frame)
+                # Track rep timestamps
+                cur_count = int(result.get("counter", 0))
+                if cur_count > last_count:
+                    rep_timestamps.append(idx / src_fps)
+                    last_count = cur_count
                 rgb    = cv2.cvtColor(result["frame"], cv2.COLOR_BGR2RGB)
                 frame_ph.image(rgb, channels="RGB", use_container_width=True)
                 prog_ph.progress(idx / total, text=f"Frame {idx}/{total}")
@@ -667,17 +712,34 @@ def _render_upload(exercise_name):
             cap.release()
             os.unlink(tmp_path)
 
+        # Compute set_time from rep timestamps
+        if len(rep_timestamps) >= 2:
+            set_time_s = rep_timestamps[-1] - rep_timestamps[0]
+        elif rep_timestamps:
+            set_time_s = rep_timestamps[0]
+        else:
+            set_time_s = idx / src_fps
+
         prog_ph.empty()
         final_reps = int(obj.counter)
         st.session_state["_upload_final_reps"]   = final_reps
         st.session_state["_upload_running"]      = False
         st.session_state["_upload_completed_at"] = _time.time()
-        form_ph.success(f"✅ Done — **{final_reps} reps** detected!")
+        st.session_state["_upload_set_time_s"]   = set_time_s
 
-    # ── Persistent Save button + countdown hint ────────────────────────────────
-    stored_reps = st.session_state.get("_upload_final_reps", 0)
-    stored_ex   = st.session_state.get("_upload_exercise", exercise_name)
-    stored_w    = st.session_state.get("_upload_weight_kg", 0.0)
+        # Calculate and show calories
+        _, _dn = EXERCISES.get(exercise_name, (None, exercise_name))
+        _profile = db.get_user_profile(st.session_state.username) or {}
+        _bw = float(_profile.get("weight_kg", 70.0))
+        _cal = _calc_calories(_dn, final_reps, set_time_s, _bw, weight_kg)
+        st.session_state["_upload_calories"] = _cal
+        cal_str = f" · ~{_cal:.0f} kcal burnt" if _cal > 0 else ""
+        form_ph.success(f"✅ Done — **{final_reps} reps** detected!{cal_str}")
+
+    stored_reps  = st.session_state.get("_upload_final_reps", 0)
+    stored_ex    = st.session_state.get("_upload_exercise", exercise_name)
+    stored_w     = st.session_state.get("_upload_weight_kg", 0.0)
+    stored_cal   = st.session_state.get("_upload_calories", 0.0)
     completed_at = st.session_state.get("_upload_completed_at", 0.0)
     if stored_reps > 0:
         _, display_name = EXERCISES.get(stored_ex, (None, stored_ex))
@@ -685,14 +747,21 @@ def _render_upload(exercise_name):
         remaining = max(0, 60 - elapsed)
         if stored_w > 0:
             st.caption(f"📦 Volume: {stored_reps} × {stored_w}kg = **{stored_reps * stored_w:.1f} kg**")
+        if stored_cal > 0:
+            st.markdown(f"""<div class="stat-card" style="border-color:rgba(239,68,68,0.25);text-align:center;">
+                <div class="stat-label">🔥 Calories Burnt (Est.)</div>
+                <div class="stat-value" style="color:#ef4444;">{stored_cal:.0f} <span style="font-size:1rem;color:#6b7280;">kcal</span></div>
+            </div>""", unsafe_allow_html=True)
         st.caption(f"⏱️ Auto-saves in {remaining}s if not saved manually.")
         if st.button(f"💾 Save {stored_reps} Reps to History",
                      type="primary", use_container_width=True, key="upload_save_btn"):
             db.save_workout(st.session_state.username, display_name, stored_reps, 1,
-                            weight_kg=stored_w if stored_w > 0 else None)
+                            weight_kg=stored_w if stored_w > 0 else None,
+                            calories_burnt=stored_cal if stored_cal > 0 else None)
             st.toast("Workout saved!", icon="✅")
             st.session_state["_upload_final_reps"]   = 0
             st.session_state["_upload_completed_at"] = 0.0
+            st.session_state["_upload_calories"]     = 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -717,6 +786,7 @@ def render_dashboard_page():
             if month < 1: month = 12; year -= 1
             st.session_state["_dashboard_year"]  = year
             st.session_state["_dashboard_month"] = month
+            st.session_state["_selected_date"]   = None
             st.rerun()
     with nav_c:
         st.markdown(
@@ -729,12 +799,14 @@ def render_dashboard_page():
             if month > 12: month = 1; year += 1
             st.session_state["_dashboard_year"]  = year
             st.session_state["_dashboard_month"] = month
+            st.session_state["_selected_date"]   = None
             st.rerun()
 
     history      = db.get_workout_history(username)
     muscle_stats = db.get_monthly_stats(username, month_str)
     total_sets   = db.get_total_sets_month(username, month_str)
     volume_data  = db.get_monthly_volume_by_exercise(username, month_str)
+    total_calories = db.get_monthly_calories(username, month_str)
 
     # Previous month for radar comparison
     prev_m_str = f"{year-1}-12" if month == 1 else f"{year}-{month-1:02d}"
@@ -744,7 +816,7 @@ def render_dashboard_page():
     top_muscle   = max(muscle_stats, key=muscle_stats.get) if any(muscle_stats.values()) else "—"
     total_volume = sum(volume_data.values())
 
-    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1, mc2, mc3, mc4, mc5 = st.columns(5)
     with mc1:
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(16,185,129,0.25);text-align:center;">
             <div class="stat-label">Days Trained</div>
@@ -761,6 +833,10 @@ def render_dashboard_page():
         st.markdown(f"""<div class="stat-card" style="border-color:rgba(139,92,246,0.25);text-align:center;">
             <div class="stat-label">Total Volume</div>
             <div class="stat-value" style="color:#8b5cf6;font-size:1.8rem;">{total_volume:,.0f}<span style="font-size:0.9rem;color:#6b7280;"> kg</span></div></div>""", unsafe_allow_html=True)
+    with mc5:
+        st.markdown(f"""<div class="stat-card" style="border-color:rgba(239,68,68,0.25);text-align:center;">
+            <div class="stat-label">Calories Burnt</div>
+            <div class="stat-value" style="color:#ef4444;font-size:1.8rem;">{total_calories:,.0f}<span style="font-size:0.9rem;color:#6b7280;"> kcal</span></div></div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
     left_col, right_col = st.columns([3, 2], gap="large")
@@ -831,21 +907,20 @@ def _render_day_detail(date_str, exercises):
         n_sets       = len(sets_list)
         total_reps   = sum(sets_list)
         w_list       = list(weights_list) + [0.0] * max(0, n_sets - len(weights_list))
-        total_vol    = sum(r * w for r, w in zip(sets_list, w_list))
-        vol_str      = f" · {total_vol:.1f} kg vol" if total_vol > 0 else ""
+        # Header: only show total reps
         st.markdown(f"""<div style="margin-bottom:10px;padding:10px 14px;border-radius:10px;
             background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
                 <span style="color:#f1f5f9;font-weight:700;font-size:0.9rem;">{ex}</span>
-                <span style="color:#10b981;font-weight:800;font-size:0.85rem;">{n_sets} set{'s' if n_sets!=1 else ''} &middot; {total_reps} reps{vol_str}</span>
+                <span style="color:#10b981;font-weight:800;font-size:0.85rem;">{total_reps} reps</span>
             </div>""", unsafe_allow_html=True)
         for i, (rep_count, w) in enumerate(zip(sets_list, w_list), 1):
-            w_str    = f" @ {w:.1f}kg" if w > 0 else ""
-            vol_str2 = f" = {rep_count*w:.1f}kg vol" if w > 0 else ""
+            # Per set: only reps + total set volume (no formula string)
+            set_vol_str = f" &middot; {rep_count*w:.1f} kg vol" if w > 0 else ""
             st.markdown(f"""<div style="display:flex;justify-content:space-between;padding:4px 8px;
                 border-radius:6px;background:rgba(255,255,255,0.02);margin-bottom:3px;">
                 <span style="color:#9ca3af;font-size:0.8rem;">Set {i}</span>
-                <span style="color:#d1d5db;font-weight:600;font-size:0.8rem;">{rep_count} reps{w_str}{vol_str2}</span>
+                <span style="color:#d1d5db;font-weight:600;font-size:0.8rem;">{rep_count} reps{set_vol_str}</span>
             </div>""", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1088,7 +1163,7 @@ def _render_metric_chart(pairs, ylabel, color):
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.06)", color="#6b7280", title=ylabel),
-        xaxis=dict(color="#9ca3af", tickangle=-25, showgrid=False),
+        xaxis=dict(type="category", color="#9ca3af", tickangle=-25, showgrid=False),
         margin=dict(t=20, b=50, l=50, r=20), height=260,
     )
     st.plotly_chart(fig, use_container_width=True)

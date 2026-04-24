@@ -182,37 +182,42 @@ def get_user_profile(username: str) -> Optional[dict]:
 
 def save_workout(username: str, exercise: str, reps: int, sets: int,
                  workout_date: Optional[str] = None,
-                 weight_kg: Optional[float] = None) -> dict:
+                 weight_kg: Optional[float] = None,
+                 calories_burnt: Optional[float] = None) -> dict:
     """
     Append a completed set to the user's workout log.
-    Each save call appends `reps` to the sets list and `weight_kg` to the weights list.
+    Each save call appends `reps` to the sets list, `weight_kg` to the weights list,
+    and optionally `calories_burnt` to the calories list.
     `sets` param is kept for API compat but only `reps` is recorded per call.
 
-    Returns the {exercise: {sets: [...], weights: [...]}} map for that day.
+    Returns the {exercise: {sets: [...], weights: [...], calories: [...]}} map for that day.
     """
     today = workout_date or date.today().isoformat()
     w = float(weight_kg) if weight_kg is not None else 0.0
+    cal = float(calories_burnt) if calories_burnt is not None else 0.0
 
     _workouts().update_one(
         {"username": username, "date": today, "exercise": exercise},
         {
             "$push": {
-                "sets":    reps,
-                "weights": w,
+                "sets":     reps,
+                "weights":  w,
+                "calories": cal,
             }
         },
         upsert=True,
     )
 
-    # Return {exercise: {sets: [...], weights: [...]}} shape for that day
+    # Return {exercise: {sets: [...], weights: [...], calories: [...]}} shape for that day
     day_docs = _workouts().find(
         {"username": username, "date": today},
-        {"_id": 0, "exercise": 1, "sets": 1, "weights": 1},
+        {"_id": 0, "exercise": 1, "sets": 1, "weights": 1, "calories": 1},
     )
     return {
         doc["exercise"]: {
-            "sets":    doc.get("sets", []),
-            "weights": doc.get("weights", []),
+            "sets":     doc.get("sets", []),
+            "weights":  doc.get("weights", []),
+            "calories": doc.get("calories", []),
         }
         for doc in day_docs
     }
@@ -294,6 +299,24 @@ def get_monthly_volume_by_exercise(username: str, year_month: Optional[str] = No
         for ex, vol in day_data.items():
             totals[ex] = round(totals.get(ex, 0.0) + vol, 2)
     return totals
+
+
+def get_monthly_calories(username: str, year_month: Optional[str] = None) -> float:
+    """
+    Sum all calories burnt across every set for a given month (YYYY-MM).
+    Returns total calories as a float.
+    """
+    target_month = year_month or datetime.now().strftime("%Y-%m")
+    docs = _workouts().find(
+        {"username": username, "date": {"$regex": f"^{target_month}"}},
+        {"_id": 0, "calories": 1},
+    )
+    total = 0.0
+    for doc in docs:
+        cal_list = doc.get("calories", [])
+        if isinstance(cal_list, list):
+            total += sum(float(c) for c in cal_list)
+    return round(total, 1)
 
 
 # ── Chat operations ───────────────────────────────────────────────────────────

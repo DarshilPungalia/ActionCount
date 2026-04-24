@@ -259,9 +259,36 @@ async def save_profile(body: UserProfile, username: str = Depends(_get_current_u
 async def save_workout(body: SaveWorkoutRequest, username: str = Depends(_get_current_user)):
     """Save a completed set for today (or the supplied date)."""
     day_data = db.save_workout(
-        username, body.exercise, body.reps, body.sets, body.date, body.weight_kg
+        username, body.exercise, body.reps, body.sets, body.date, body.weight_kg,
+        calories_burnt=getattr(body, "calories_burnt", None),
     )
     return {"status": "saved", "day": day_data}
+
+
+@app.get("/api/workout/calories")
+async def get_monthly_calories(
+    month: Optional[str] = None,
+    username: str = Depends(_get_current_user),
+):
+    """Return total calories burnt for the given YYYY-MM month."""
+    year_month = month or datetime.now().strftime("%Y-%m")
+    total = db.get_monthly_calories(username, year_month)
+    return {"month": year_month, "total_calories": total}
+
+
+@app.get("/session/{session_id}/summary")
+async def get_session_summary(session_id: str):
+    """Return final rep count and estimated calories for a completed upload session."""
+    mgr = SessionManager.instance()
+    try:
+        session = mgr.get(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Session {session_id!r} not found")
+    result = session.last_result or {}
+    return {
+        "reps": result.get("counter", 0),
+        "calories_burnt": result.get("calories_burnt", 0.0),
+    }
 
 
 @app.get("/api/workout/volume", response_model=VolumeResponse)

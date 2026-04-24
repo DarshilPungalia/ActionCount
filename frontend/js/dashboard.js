@@ -6,6 +6,7 @@ let workoutHistory = {};
 let muscleStats    = {};
 let prevMuscleStats = {};
 let volumeData     = {};
+let caloriesTotalMonth = 0;
 let currentDate    = new Date();
 let radarChart     = null;
 let volumeChart    = null;
@@ -29,11 +30,12 @@ async function loadAll() {
   const prevDt = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
   const prevYm = fmtYearMonth(prevDt);
   try {
-    const [histRes, statsRes, prevStatsRes, volRes] = await Promise.all([
+    const [histRes, statsRes, prevStatsRes, volRes, calRes] = await Promise.all([
       Workout.history(),
       Workout.stats(ym),
       Workout.stats(prevYm),
       Workout.volume(ym),
+      Workout.calories(ym),
     ]);
     workoutHistory = {};
     (histRes.history || []).forEach(d => { workoutHistory[d.date] = d.exercises; });
@@ -43,6 +45,7 @@ async function loadAll() {
     (prevStatsRes.stats || []).forEach(s => { prevMuscleStats[s.muscle_group] = s.total_sets; });
     volumeData = {};
     (volRes.volumes || []).forEach(v => { volumeData[v.exercise] = v.total_volume_kg; });
+    caloriesTotalMonth = calRes.total_calories || 0;
 
     renderCalendar();
     renderMuscleStats();
@@ -131,6 +134,9 @@ function renderSummaryCards() {
   // Volume card (add if element exists)
   const volEl=document.getElementById("totalVolume");
   if(volEl) volEl.textContent=totalVol.toLocaleString(undefined,{maximumFractionDigits:0})+" kg";
+  // Calories card
+  const calEl=document.getElementById("totalCalories");
+  if(calEl) calEl.textContent=Math.round(caloriesTotalMonth).toLocaleString()+" kcal";
 }
 
 // ── Radar chart ───────────────────────────────────────────────────────────────
@@ -281,21 +287,20 @@ function openModal(dateStr) {
       const nSets=setsArr.length;
       const totalVol=setsArr.reduce((acc,r,i)=>acc+r*(weightsArr[i]||0),0);
       const volStr=totalVol>0?` · ${totalVol.toFixed(1)} kg vol`:"";
+      // Per-set rows: only reps + total set volume (no formula string)
       const setRows=setsArr.map((r,i)=>{
         const w=weightsArr[i]||0;
-        const ws=w>0?` @ ${w.toFixed(1)}kg`:"";
-        const vs=w>0?` = ${(r*w).toFixed(1)}kg vol`:"";
+        const setVol=w>0?` · ${(r*w).toFixed(1)} kg vol`:"";
         return `<div class="flex justify-between text-xs px-2 py-1 rounded bg-white/[0.02] mt-1">
           <span class="text-slate-500">Set ${i+1}</span>
-          <span class="text-slate-300 font-semibold">${r} reps${ws}${vs}</span></div>`;
+          <span class="text-slate-300 font-semibold">${r} reps${setVol}</span></div>`;
       }).join("");
       list.insertAdjacentHTML("beforeend",`
         <div class="p-3 rounded-xl border border-white/[0.07] bg-white/[0.03]" style="animation:fadeInUp 0.3s ease ${idx*0.06}s both;">
           <div class="flex items-center justify-between mb-2">
             <div class="text-sm font-semibold text-white">${ex}</div>
             <div class="text-right">
-              <span class="text-xs font-bold text-emerald-400">${nSets} set${nSets!==1?"s":""}</span>
-              <span class="text-xs text-slate-500 ml-1">· ${totalReps} reps${volStr}</span>
+              <span class="text-xs font-bold text-emerald-400">${totalReps} reps</span>
             </div>
           </div>${setRows}
         </div>`);

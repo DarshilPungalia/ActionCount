@@ -111,7 +111,7 @@
     <div class="lg:col-span-2 space-y-6">
 
       <!-- Month Stats Summary -->
-      <div class="grid grid-cols-3 gap-4 anim-up d100">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 anim-up d100">
         <div class="glass p-4 text-center">
           <div class="text-2xl font-extrabold text-emerald-400" id="totalWorkoutDays">—</div>
           <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Days Trained</div>
@@ -124,16 +124,21 @@
           <div class="text-2xl font-extrabold text-amber-400" id="topMuscle">—</div>
           <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Top Muscle</div>
         </div>
+        <div class="glass p-4 text-center">
+          <div class="text-2xl font-extrabold text-rose-400" id="totalCalories">—</div>
+          <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Calories Burnt</div>
+        </div>
       </div>
 
       <!-- Calendar card -->
       <div class="glass p-6 anim-up d200">
-        <div class="flex items-center justify-between mb-5">
+        <!-- Nav buttons overlaid directly beside the month label -->
+        <div class="relative flex items-center justify-center mb-5">
           <button id="prevMonth" onclick="changeMonth(-1)"
-            class="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">‹</button>
+            class="absolute left-0 p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">&#8249;</button>
           <h2 class="text-lg font-bold text-white" id="calMonthLabel"></h2>
           <button id="nextMonth" onclick="changeMonth(1)"
-            class="p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">›</button>
+            class="absolute right-0 p-2 rounded-lg hover:bg-white/5 text-slate-400 hover:text-white transition-all text-lg">&#8250;</button>
         </div>
 
         <!-- Day headers -->

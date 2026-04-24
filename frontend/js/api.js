@@ -57,11 +57,11 @@ const Profile = {
 };
 
 const Workout = {
-  // weight_kg optional — pass null/undefined for bodyweight exercises
-  async save(exercise, reps, sets = 1, date = null, weight_kg = null) {
+  // weight_kg and calories_burnt are optional
+  async save(exercise, reps, sets = 1, date = null, weight_kg = null, calories_burnt = null) {
     return apiFetch("/api/workout/save", {
       method: "POST",
-      body: JSON.stringify({ exercise, reps, sets, date, weight_kg }),
+      body: JSON.stringify({ exercise, reps, sets, date, weight_kg, calories_burnt }),
     });
   },
   async history()         { return apiFetch("/api/workout/history"); },
@@ -72,6 +72,10 @@ const Workout = {
   async volume(month = null){
     const qs = month ? `?month=${month}` : "";
     return apiFetch(`/api/workout/volume${qs}`);
+  },
+  async calories(month = null){
+    const qs = month ? `?month=${month}` : "";
+    return apiFetch(`/api/workout/calories${qs}`);
   },
 };
 

@@ -59,6 +59,7 @@ class SaveWorkoutRequest(BaseModel):
     sets: int = Field(default=1, ge=1)
     date: Optional[str] = None  # ISO date string YYYY-MM-DD; defaults to today
     weight_kg: Optional[float] = Field(default=None, ge=0, description="Weight used in kg (0 = bodyweight)")
+    calories_burnt: Optional[float] = Field(default=None, ge=0, description="Estimated kcal burnt this set")
 
 
 class WorkoutEntry(BaseModel):
