@@ -26,11 +26,7 @@ from pymongo.server_api import ServerApi
 # ── Load env & connect ────────────────────────────────────────────────────────
 load_dotenv()
 
-_MONGO_PASS = os.getenv("MONGODB_PASSWORD", "")
-_MONGO_URI = (
-    f"mongodb+srv://DarshilPungalia:{_MONGO_PASS}"
-    "@cluster0.mbrvwfy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
-)
+_MONGO_URI = os.getenv("MONGODB_URI", "")
 
 _client: MongoClient | None = None
 
@@ -57,6 +53,26 @@ def _chats():
 
 def _metrics():
     return _get_db()["metrics"]
+
+
+def _calorie_logs():
+    return _get_db()["calorie_logs"]
+
+
+def _conversation_turns():
+    return _get_db()["conversation_turns"]
+
+
+def _diet_plans():
+    return _get_db()["diet_plans"]
+
+
+def _fulfilled_requests():
+    return _get_db()["fulfilled_requests"]
+
+
+def _memory_summaries():
+    return _get_db()["memory_summaries"]
 
 
 # ── Muscle group mapping ──────────────────────────────────────────────────────
@@ -390,3 +406,182 @@ def get_metrics(username: str) -> list[dict]:
         sort=[("date", ASCENDING)],
     )
     return list(docs)
+
+
+# ── Calorie Log operations ────────────────────────────────────────────────────
+
+def log_calorie_entry(username: str, entry: dict) -> dict:
+    """
+    Persist a single food-scan result.
+    entry must contain: {timestamp, foods, total_calories, confidence, notes}
+    foods is a list of {name, portion, calories}.
+    Returns the stored document (with generated log_id).
+    """
+    import uuid
+    log_id = str(uuid.uuid4())
+    doc = {
+        "log_id":        log_id,
+        "username":      username,
+        "timestamp":     entry.get("timestamp", datetime.utcnow().isoformat()),
+        "foods":         entry.get("foods", []),
+        "total_calories": float(entry.get("total_calories", 0)),
+        "confidence":    entry.get("confidence", "low"),
+        "notes":         entry.get("notes", ""),
+    }
+    _calorie_logs().insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def get_calorie_logs(username: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    """Return paginated calorie scan logs for a user, newest first."""
+    docs = _calorie_logs().find(
+        {"username": username},
+        {"_id": 0, "username": 0},
+        sort=[("timestamp", -1)],
+    ).skip(offset).limit(limit)
+    return list(docs)
+
+
+def get_calories_today(username: str) -> float:
+    """
+    Sum total_calories from all food scans logged since midnight UTC today.
+    Returns total as float.
+    """
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    docs = _calorie_logs().find(
+        {"username": username, "timestamp": {"$gte": today_start}},
+        {"_id": 0, "total_calories": 1},
+    )
+    return round(sum(float(d.get("total_calories", 0)) for d in docs), 1)
+
+
+def delete_calorie_log(username: str, log_id: str) -> bool:
+    """Delete a calorie log entry by log_id. Returns True if deleted."""
+    result = _calorie_logs().delete_one({"username": username, "log_id": log_id})
+    return result.deleted_count > 0
+
+
+# ── Conversation Turns (unified text + voice memory) ──────────────────────────
+
+def append_conversation_turn(username: str, role: str, content: str,
+                              channel: str = "text", attachments: Optional[list] = None) -> dict:
+    """
+    Append a turn to the shared conversation history.
+    channel: 'text' | 'voice'
+    attachments: optional list of {type, ref_id} dicts
+    """
+    import uuid
+    turn = {
+        "turn_id":    str(uuid.uuid4()),
+        "username":   username,
+        "timestamp":  datetime.utcnow().isoformat(),
+        "channel":    channel,
+        "role":       role,
+        "content":    content,
+        "attachments": attachments or [],
+    }
+    _conversation_turns().insert_one(turn)
+    return {k: v for k, v in turn.items() if k != "_id"}
+
+
+def get_recent_turns(username: str, limit: int = 20) -> list[dict]:
+    """Return the last N conversation turns across all channels, oldest first."""
+    docs = _conversation_turns().find(
+        {"username": username},
+        {"_id": 0, "username": 0},
+        sort=[("timestamp", -1)],
+    ).limit(limit)
+    return list(reversed(list(docs)))
+
+
+def get_turn_count(username: str) -> int:
+    """Return total number of conversation turns stored for a user."""
+    return _conversation_turns().count_documents({"username": username})
+
+
+# ── Diet Plans ────────────────────────────────────────────────────────────────
+
+def save_diet_plan(username: str, title: str, content: str) -> dict:
+    """Store a Friday-generated diet plan. Marks all previous plans as inactive."""
+    import uuid
+    plan_id = str(uuid.uuid4())
+    # Deactivate previous plans
+    _diet_plans().update_many(
+        {"username": username}, {"$set": {"is_active": False}}
+    )
+    doc = {
+        "plan_id":    plan_id,
+        "username":   username,
+        "created_at": datetime.utcnow().isoformat(),
+        "title":      title,
+        "content":    content,
+        "is_active":  True,
+    }
+    _diet_plans().insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def get_active_diet_plan(username: str) -> Optional[dict]:
+    """Return the current active diet plan for a user, or None."""
+    doc = _diet_plans().find_one(
+        {"username": username, "is_active": True},
+        {"_id": 0, "username": 0},
+        sort=[("created_at", -1)],
+    )
+    return doc
+
+
+# ── Fulfilled Requests Log ────────────────────────────────────────────────────
+
+def log_fulfilled_request(username: str, req_type: str,
+                           summary: str, ref_id: Optional[str] = None) -> dict:
+    """Log a significant action Friday has completed."""
+    import uuid
+    doc = {
+        "request_id": str(uuid.uuid4()),
+        "username":   username,
+        "timestamp":  datetime.utcnow().isoformat(),
+        "type":       req_type,   # 'diet_plan' | 'calorie_scan' | 'reminder' | 'custom'
+        "summary":    summary,
+        "ref_id":     ref_id,
+    }
+    _fulfilled_requests().insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def get_fulfilled_requests(username: str, limit: int = 5) -> list[dict]:
+    """Return the N most recent fulfilled requests for context injection."""
+    docs = _fulfilled_requests().find(
+        {"username": username},
+        {"_id": 0, "username": 0},
+        sort=[("timestamp", -1)],
+    ).limit(limit)
+    return list(docs)
+
+
+# ── Memory Summaries ──────────────────────────────────────────────────────────
+
+def save_memory_summary(username: str, content: str,
+                         turns_from: int, turns_to: int) -> dict:
+    """Store a generated memory summary covering a range of turn indices."""
+    import uuid
+    doc = {
+        "summary_id":         str(uuid.uuid4()),
+        "username":           username,
+        "generated_at":       datetime.utcnow().isoformat(),
+        "content":            content,
+        "turns_covered_from": turns_from,
+        "turns_covered_to":   turns_to,
+    }
+    _memory_summaries().insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def get_latest_memory_summary(username: str) -> Optional[dict]:
+    """Return the most recent memory summary for a user, or None."""
+    doc = _memory_summaries().find_one(
+        {"username": username},
+        {"_id": 0, "username": 0},
+        sort=[("generated_at", -1)],
+    )
+    return doc

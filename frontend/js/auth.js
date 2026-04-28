@@ -5,7 +5,7 @@
 
 // ── Redirect if already logged in ─────────────────────────────────────────────
 if (Auth.isLoggedIn()) {
-  window.location.href = "/";
+  window.location.href = "/welcome";
 }
 
 // ── Card flip ─────────────────────────────────────────────────────────────────
@@ -96,7 +96,7 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
     if (data.is_new_user) {
       showOnboarding();
     } else {
-      window.location.href = "/";
+      window.location.href = "/welcome";
     }
   } catch (err) {
     showError("loginError", err.message);
@@ -231,7 +231,7 @@ document.getElementById("onboardingForm").addEventListener("submit", async (e) =
 
   try {
     await Profile.save(payload);
-    window.location.href = "/";
+    window.location.href = "/welcome";
   } catch (err) {
     showError("obError", err.message);
     btn.disabled = false;

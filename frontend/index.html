@@ -3,316 +3,442 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="ActionCount — real-time AI-powered exercise rep counter using pose estimation. Count squats, pushups, bicep curls and more via webcam or video upload." />
+  <meta name="description" content="ActionCount — real-time AI-powered exercise rep counter using pose estimation." />
   <title>ActionCount — AI Rep Counter</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="styles.css" />
-  <style>
-    .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; display:inline-block; }
-    .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
-    .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
-    .save-set-btn {
-      width:100%; margin-top:8px;
-      background: linear-gradient(135deg,#10b981,#059669);
-      color:#fff; border:none; border-radius:10px; padding:10px 16px;
-      font-size:0.9rem; font-weight:600; cursor:pointer;
-      transition:all 0.2s; display:flex; align-items:center; justify-content:center; gap:6px;
-    }
-    .save-set-btn:hover { filter:brightness(1.1); transform:translateY(-1px); box-shadow:0 6px 20px rgba(16,185,129,0.35); }
-    .save-set-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; box-shadow:none; }
-    #save-toast {
-      position:fixed; bottom:24px; right:24px; z-index:9999;
-      background:#10b981; color:#fff; padding:10px 18px; border-radius:12px;
-      font-size:0.85rem; font-weight:600;
-      opacity:0; transform:translateY(16px);
-      transition:all 0.3s; pointer-events:none;
-    }
-    #save-toast.show { opacity:1; transform:translateY(0); }
-    #tracker-nav {
-      position:sticky; top:0; z-index:40;
-      background:rgba(10,14,26,0.85); backdrop-filter:blur(20px);
-      border-bottom:1px solid rgba(255,255,255,0.06);
-    }
-  </style>
+  <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
 
-  <!-- ===================== TOP NAV ===================== -->
+  <!-- ═══════════════════════════════════════════════════════
+       TOP NAV — slides down on hover, hides during streaming
+       ═══════════════════════════════════════════════════════ -->
   <nav id="tracker-nav">
-    <div style="max-width:1200px;margin:0 auto;padding:0 1rem;height:56px;display:flex;align-items:center;justify-content:space-between;">
-      <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;">
-        <span style="font-size:1.5rem;">🏋️</span>
-        <span style="font-weight:800;color:#fff;font-size:1rem;">ActionCount</span>
+    <div class="nav-inner">
+      <a href="/" class="nav-brand">
+        <span style="font-size:1.4rem;">🏋️</span>
+        <span class="nav-brand-text">ActionCount</span>
       </a>
-      <div style="display:flex;gap:4px;">
-        <a href="/" class="nav-pill active">Tracker</a>
-        <a href="/dashboard" class="nav-pill">Dashboard</a>
-        <a href="/chatbot" class="nav-pill">AI Coach</a>
-        <a href="/metrics" class="nav-pill">Metrics</a>
+
+      <!-- Tab buttons live in nav -->
+      <div class="nav-tabs">
+        <button id="tab-camera" class="nav-tab nav-tab--active" role="tab" aria-selected="true" aria-controls="panel-camera">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/></svg>
+          Live Camera
+        </button>
+        <button id="tab-upload" class="nav-tab" role="tab" aria-selected="false" aria-controls="panel-upload">
+          <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
+          Upload Video
+        </button>
       </div>
-      <div style="display:flex;align-items:center;gap:12px;">
-        <span id="nav-username" style="font-size:0.8rem;color:#64748b;"></span>
-        <button onclick="Auth.logout()" style="font-size:0.8rem;color:#64748b;background:none;border:none;cursor:pointer;" onmouseover="this.style.color='#f87171'" onmouseout="this.style.color='#64748b'">Logout</button>
+
+      <div class="nav-right">
+        <a href="/dashboard" class="nav-pill">Dashboard</a>
+        <a href="/chatbot"   class="nav-pill">AI Coach</a>
+        <a href="/metrics"   class="nav-pill">Metrics</a>
+        <span id="nav-username" class="nav-user"></span>
+        <button onclick="Auth.logout()" class="nav-logout">Logout</button>
       </div>
     </div>
   </nav>
 
-  <!-- ===================== ANIMATED BACKGROUND ===================== -->
-  <div class="bg-orbs" aria-hidden="true">
-    <span class="orb orb-1"></span>
-    <span class="orb orb-2"></span>
-    <span class="orb orb-3"></span>
+  <!-- ═══════════════════════════════════════════════════════
+       FULLSCREEN CAMERA WRAP
+       Three.js (hud.js) and CSS2D (overlay.js) mount here.
+       ═══════════════════════════════════════════════════════ -->
+  <div id="fullscreen-camera-wrap">
+
+    <!-- Camera feed -->
+    <video id="local-video" autoplay muted playsinline aria-label="Webcam feed"></video>
+
+    <!-- Skeleton canvas (SkeletonDrawer writes here) -->
+    <canvas id="skeleton-canvas" aria-hidden="true"></canvas>
+
+    <!-- Placeholder shown before camera starts -->
+    <div class="video-placeholder" id="camera-placeholder">
+      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <circle cx="24" cy="18" r="5"/>
+        <path d="M8 38c0-8.837 7.163-16 16-16s16 7.163 16 16"/>
+        <path d="M2 24C2 11.85 11.85 2 24 2s22 9.85 22 22-9.85 22-22 22S2 36.15 2 24z"/>
+      </svg>
+      <p>Move your cursor to the <strong>top of the screen</strong> to reveal the menu</p>
+    </div>
+
+  </div><!-- /#fullscreen-camera-wrap -->
+
+  <!-- ── Floating control panel (bottom-left) — OUTSIDE camera wrap so position:fixed works ── -->
+  <div id="overlay-controls">
+
+    <!-- Exercise selector -->
+    <div class="oc-group">
+      <label class="oc-label" for="exercise-select">Exercise</label>
+      <div class="select-wrapper">
+        <select id="exercise-select" aria-label="Choose exercise">
+          <option value="squat">🦵 Squat</option>
+          <option value="pushup">💪 Push-up</option>
+          <option value="bicep_curl">🏋️ Bicep Curl</option>
+          <option value="pullup">🤸 Pull-up</option>
+          <option value="lateral_raise">↔️ Lateral Raise</option>
+          <option value="overhead_press">⬆️ Overhead Press</option>
+          <option value="situp">🧘 Sit-up</option>
+          <option value="crunch">⚡ Crunch</option>
+          <option value="leg_raise">🦶 Leg Raise</option>
+          <option value="knee_raise">🦵 Knee Raise</option>
+          <option value="knee_press">🔽 Knee Press</option>
+        </select>
+        <svg class="select-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+      </div>
+    </div>
+
+    <!-- Weight -->
+    <div class="oc-group">
+      <label class="oc-label" for="weight-input">Weight (kg)</label>
+      <input id="weight-input" type="number" min="0" max="500" step="0.5" value="0"
+        placeholder="0 = bodyweight" class="oc-input" aria-label="Weight used in kg" />
+    </div>
+
+    <!-- Camera controls -->
+    <div class="oc-btns">
+      <button id="btn-start-camera" class="btn btn-primary" aria-label="Start webcam">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
+        Start
+      </button>
+      <button id="btn-stop-camera" class="btn btn-danger" aria-label="Stop webcam" hidden>
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd"/></svg>
+        Stop
+      </button>
+      <button id="btn-reset" class="btn btn-ghost" aria-label="Reset rep count">
+        <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
+        Reset
+      </button>
+    </div>
+
+    <!-- Save Set -->
+    <button id="btn-save-set" class="btn btn-save" aria-label="Save current reps as a set" disabled>
+      ✅ Save Set
+    </button>
+    <div class="oc-hint" id="save-hint">Complete some reps first</div>
+
+    <!-- Connection status -->
+    <div class="status-pill" role="status" aria-live="polite">
+      <span id="status-dot" class="status-dot"></span>
+      <span id="status-text">Idle</span>
+    </div>
   </div>
 
-  <!-- ===================== APP SHELL ===================== -->
-  <div class="app-shell">
+  <!-- FPS badge (bottom-right) — OUTSIDE camera wrap -->
+  <div class="fps-badge" id="fps-badge" aria-label="Frames per second">— FPS</div>
 
-    <!-- HEADER -->
-    <header class="app-header">
-      <div class="logo">
-        <svg class="logo-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-          <circle cx="16" cy="8"  r="3" fill="currentColor"/>
-          <line x1="16" y1="11" x2="16" y2="20" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="16" y1="15" x2="10" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="16" y1="15" x2="22" y2="19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="16" y1="20" x2="12" y2="28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-          <line x1="16" y1="20" x2="20" y2="28" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
-        </svg>
-        <h1 class="logo-text">Action<strong>Count</strong></h1>
+  <!-- Nav hover trigger strip — top 8px of screen, JS handles show/hide -->
+  <div id="nav-trigger"></div>
+
+
+  <!-- ═══════════════════════════════════════════════════════
+       HIDDEN DOM REFS — updateHUD() writes here; CSS2D renders visually
+       ═══════════════════════════════════════════════════════ -->
+  <div id="hud-dom-refs" aria-hidden="true" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;overflow:hidden;">
+    <div id="rep-count">0</div>
+    <div id="feedback-card">
+      <div id="feedback-value">
+        <span id="feedback-emoji">📍</span>
+        <span id="feedback-text">Get in Position</span>
       </div>
-      <p class="app-tagline">AI-powered rep counter · Powered by RTMPose</p>
-    </header>
+    </div>
+    <div id="progress-card">
+      <div role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div id="progress-fill" style="width:0%"></div>
+      </div>
+      <div id="progress-pct-label">0% complete</div>
+    </div>
+    <div id="form-status">
+      <span id="form-status-dot"></span>
+      <span id="form-status-text">📍 Get in Position</span>
+    </div>
+    <svg><path id="angle-arc-fill" stroke-dasharray="172" stroke-dashoffset="172"/></svg>
+    <div id="reps-card"></div>
+  </div>
 
-    <!-- MAIN CONTENT -->
-    <main class="app-main">
 
-      <!-- ── SIDEBAR ── -->
-      <aside class="sidebar">
+  <!-- ═══════════════════════════════════════════════════════
+       UPLOAD PANEL — shown when upload tab active
+       ═══════════════════════════════════════════════════════ -->
+  <div id="panel-upload" class="upload-overlay" role="tabpanel" aria-labelledby="tab-upload" hidden>
+    <div class="upload-inner">
+      <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:1rem;color:#f1f5f9;">Upload Video</h2>
 
-        <!-- Exercise Selector -->
-        <section class="card" aria-labelledby="exercise-label">
-          <h2 id="exercise-label" class="card-title">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
-            Exercise
-          </h2>
-          <div class="select-wrapper">
-            <select id="exercise-select" aria-label="Choose exercise">
-              <option value="squat">🦵 Squat</option>
-              <option value="pushup">💪 Push-up</option>
-              <option value="bicep_curl">🏋️ Bicep Curl</option>
-              <option value="pullup">🤸 Pull-up</option>
-              <option value="lateral_raise">↔️ Lateral Raise</option>
-              <option value="overhead_press">⬆️ Overhead Press</option>
-              <option value="situp">🧘 Sit-up</option>
-              <option value="crunch">⚡ Crunch</option>
-              <option value="leg_raise">🦶 Leg Raise</option>
-              <option value="knee_raise">🦵 Knee Raise</option>
-              <option value="knee_press">🔽 Knee Press</option>
-            </select>
-            <svg class="select-arrow" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
-          </div>
-        </section>
-
-        <!-- Stats Panel (mirrors Streamlit stat cards) -->
-        <section class="card stats-panel" aria-labelledby="stats-panel-label">
-          <h2 id="stats-panel-label" class="card-title">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
-            Stats
-          </h2>
-
-          <!-- Reps This Session -->
-          <div class="stat-card stat-card--reps" id="reps-card">
-            <div class="stat-card-label">Reps This Session</div>
-            <div class="stat-card-value" id="rep-count" aria-live="polite" aria-label="Rep count">0</div>
-          </div>
-
-          <!-- Form Feedback -->
-          <div class="stat-card stat-card--feedback" id="feedback-card">
-            <div class="stat-card-label">Form Feedback</div>
-            <div class="stat-card-feedback" id="feedback-value" aria-live="polite">
-              <span id="feedback-emoji">📍</span>
-              <span id="feedback-text">Get in Position</span>
-            </div>
-          </div>
-
-          <!-- Exercise Progress -->
-          <div class="stat-card" id="progress-card">
-            <div class="stat-card-label">Exercise Progress</div>
-            <div class="progress-track" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100" aria-label="Exercise progress">
-              <div class="progress-fill" id="progress-fill"></div>
-            </div>
-            <div class="progress-pct-label" id="progress-pct-label">0% complete</div>
-          </div>
-
-          <!-- Form Status -->
-          <div class="form-status" id="form-status">
-            <span class="form-status-dot" id="form-status-dot"></span>
-            <span id="form-status-text">📍 Get in Position</span>
-          </div>
-
-          <!-- Legacy angle arc (hidden by default, shown for angle stat) -->
-          <div class="angle-arc-wrap" aria-hidden="true">
-            <svg id="angle-arc-svg" viewBox="0 0 120 70" class="angle-arc">
-              <path d="M10 65 A55 55 0 0 1 110 65" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="8" stroke-linecap="round"/>
-              <path id="angle-arc-fill" d="M10 65 A55 55 0 0 1 110 65" fill="none" stroke="url(#arcGrad)" stroke-width="8" stroke-linecap="round"
-                    stroke-dasharray="172" stroke-dashoffset="172"/>
-              <defs>
-                <linearGradient id="arcGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                  <stop offset="0%"   stop-color="#6366f1"/>
-                  <stop offset="100%" stop-color="#10b981"/>
-                </linearGradient>
-              </defs>
-            </svg>
-          </div>
-        </section>
-
-        <!-- Controls -->
-        <section class="card controls-card" aria-labelledby="controls-label">
-          <h2 id="controls-label" class="card-title">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
-            Controls
-          </h2>
-
-          <!-- Weight input for volume tracking -->
-          <label style="font-size:0.78rem;color:#9ca3af;display:block;margin-bottom:4px;">🏋️ Weight used (kg)</label>
-          <input id="weight-input" type="number" min="0" max="500" step="0.5" value="0"
-            placeholder="0 = bodyweight"
-            style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);
-                   background:rgba(255,255,255,0.05);color:#f1f5f9;font-size:0.85rem;
-                   margin-bottom:10px;box-sizing:border-box;outline:none;"
-            aria-label="Weight used in kg" />
-
-          <button id="btn-reset" class="btn btn-ghost" aria-label="Reset rep count">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"/></svg>
-            Reset Count
-          </button>
-
-          <button id="btn-save-set" class="save-set-btn" aria-label="Save current reps as a set" disabled>
-            ✅ Save Set
-          </button>
-          <div style="font-size:0.7rem;color:#4b5563;text-align:center;margin-top:4px;" id="save-hint">Complete some reps first</div>
-        </section>
-
-        <!-- Connection status -->
-        <div class="status-pill" role="status" aria-live="polite">
-          <span id="status-dot" class="status-dot"></span>
-          <span id="status-text">Idle</span>
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0"
+           aria-label="Video upload area. Click or drag a video file here.">
+        <div class="drop-zone-inner">
+          <svg class="drop-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <path d="M24 32V16M16 24l8-8 8 8"/>
+            <rect x="4" y="8" width="40" height="32" rx="4"/>
+          </svg>
+          <p class="drop-title">Drop a video here</p>
+          <p class="drop-sub">or click to browse · MP4, MOV, AVI, WebM</p>
+          <input type="file" id="file-input" accept="video/*" aria-label="Choose video file" />
         </div>
+      </div>
 
-      </aside>
+      <div class="progress-wrap" id="progress-wrap" hidden>
+        <div class="progress-bar" id="progress-bar"></div>
+        <span class="progress-label" id="progress-label">Processing…</span>
+      </div>
 
-      <!-- ── MAIN PANEL ── -->
-      <section class="main-panel">
+      <div class="video-wrap" id="upload-video-wrap" hidden style="margin-top:1rem;">
+        <img id="upload-result-img" alt="Processed exercise video with skeleton overlay and rep count" />
+      </div>
+    </div>
+  </div>
 
-        <!-- Mode Tabs -->
-        <div class="tab-bar" role="tablist" aria-label="Input mode">
-          <button id="tab-camera" class="tab tab--active" role="tab" aria-selected="true"  aria-controls="panel-camera">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z"/></svg>
-            Live Camera
-          </button>
-          <button id="tab-upload" class="tab" role="tab" aria-selected="false" aria-controls="panel-upload">
-            <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM6.293 6.707a1 1 0 010-1.414l3-3a1 1 0 011.414 0l3 3a1 1 0 01-1.414 1.414L11 5.414V13a1 1 0 11-2 0V5.414L7.707 6.707a1 1 0 01-1.414 0z" clip-rule="evenodd"/></svg>
-            Upload Video
-          </button>
-        </div>
 
-        <!-- ── CAMERA PANEL ── -->
-        <div id="panel-camera" class="mode-panel" role="tabpanel" aria-labelledby="tab-camera">
-          <div class="video-wrap" id="camera-video-wrap">
-            <!-- Local video (display resolution) -->
-            <video id="local-video" autoplay muted playsinline aria-label="Webcam feed"></video>
-            <!-- Canvas overlay for skeleton drawing -->
-            <canvas id="skeleton-canvas" aria-hidden="true"></canvas>
-            <!-- Placeholder shown before camera starts -->
-            <div class="video-placeholder" id="camera-placeholder">
-              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <circle cx="24" cy="18" r="5"/>
-                <path d="M8 38c0-8.837 7.163-16 16-16s16 7.163 16 16"/>
-                <path d="M2 24C2 11.85 11.85 2 24 2s22 9.85 22 22-9.85 22-22 22S2 36.15 2 24z"/>
-              </svg>
-              <p>Click <strong>Start Camera</strong> to begin</p>
-            </div>
-          </div>
+  <!-- ═══════════════════════════════════════════════════════
+       TOAST
+       ═══════════════════════════════════════════════════════ -->
+  <div id="save-toast"></div>
 
-          <div class="camera-controls">
-            <button id="btn-start-camera" class="btn btn-primary" aria-label="Start webcam">
-              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"/></svg>
-              Start Camera
-            </button>
-            <button id="btn-stop-camera" class="btn btn-danger" aria-label="Stop webcam" hidden>
-              <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8 7a1 1 0 00-1 1v4a1 1 0 001 1h4a1 1 0 001-1V8a1 1 0 00-1-1H8z" clip-rule="evenodd"/></svg>
-              Stop Camera
-            </button>
-            <div class="fps-badge" id="fps-badge" aria-label="Frames per second">— FPS</div>
-          </div>
-        </div>
 
-        <!-- ── UPLOAD PANEL ── -->
-        <div id="panel-upload" class="mode-panel" role="tabpanel" aria-labelledby="tab-upload" hidden>
+  <!-- ═══════════════════════════════════════════════════════
+       FRIDAY HUD OVERLAYS
+       ═══════════════════════════════════════════════════════ -->
+  <div id="friday-speaking-dot" aria-hidden="true" style="
+    position:fixed; top:68px; right:20px; z-index:1000;
+    display:none; align-items:center; gap:8px;
+    background:rgba(10,14,26,0.75); backdrop-filter:blur(12px);
+    border:1px solid rgba(99,102,241,0.35); border-radius:999px;
+    padding:6px 14px 6px 10px; pointer-events:none;">
+    <span style="width:10px;height:10px;border-radius:50%;background:#6366f1;
+      box-shadow:0 0 0 0 rgba(99,102,241,0.7);animation:friday-pulse 1.2s infinite;"></span>
+    <span style="font-size:0.72rem;color:#a5b4fc;letter-spacing:0.05em;">FRIDAY</span>
+  </div>
 
-          <!-- Drop zone -->
-          <div id="drop-zone" class="drop-zone" role="button" tabindex="0"
-               aria-label="Video upload area. Click or drag a video file here.">
-            <div class="drop-zone-inner">
-              <svg class="drop-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-                <path d="M24 32V16M16 24l8-8 8 8"/>
-                <rect x="4" y="8" width="40" height="32" rx="4"/>
-              </svg>
-              <p class="drop-title">Drop a video here</p>
-              <p class="drop-sub">or click to browse · MP4, MOV, AVI, WebM</p>
-              <input type="file" id="file-input" accept="video/*" aria-label="Choose video file" />
-            </div>
-          </div>
+  <div id="friday-calorie-popup" aria-live="polite" style="
+    position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(24px);
+    z-index:1001; min-width:320px; max-width:420px;
+    background:rgba(10,14,26,0.82); backdrop-filter:blur(20px) saturate(1.4);
+    border:1px solid rgba(255,255,255,0.1); border-radius:16px;
+    padding:18px 20px; pointer-events:none;
+    opacity:0; transition:opacity 0.3s, transform 0.3s;
+    box-shadow:0 8px 32px rgba(0,0,0,0.5);">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <span style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.12em;color:#6366f1;font-weight:600;">🍽️ Calorie Scan</span>
+      <span id="friday-calorie-confidence" style="font-size:0.68rem;font-weight:700;padding:2px 8px;border-radius:999px;background:rgba(16,185,129,0.15);color:#10b981;">—</span>
+    </div>
+    <ul id="friday-calorie-foods" style="list-style:none;padding:0;margin:0 0 12px 0;font-size:0.85rem;color:#e2e8f0;line-height:1.7;"></ul>
+    <div style="display:flex;align-items:baseline;gap:6px;border-top:1px solid rgba(255,255,255,0.07);padding-top:10px;">
+      <span style="font-size:0.75rem;color:#64748b;">Total</span>
+      <span id="friday-calorie-total" style="font-size:1.4rem;font-weight:700;color:#f1f5f9;">—</span>
+      <span style="font-size:0.75rem;color:#64748b;">kcal</span>
+    </div>
+    <div id="friday-calorie-notes" style="font-size:0.73rem;color:#64748b;margin-top:6px;"></div>
+  </div>
 
-          <!-- Progress bar (hidden until upload) -->
-          <div class="progress-wrap" id="progress-wrap" hidden>
-            <div class="progress-bar" id="progress-bar"></div>
-            <span class="progress-label" id="progress-label">Processing…</span>
-          </div>
+  <style>
+    @keyframes friday-pulse {
+      0%   { box-shadow: 0 0 0 0   rgba(99,102,241,0.7); }
+      70%  { box-shadow: 0 0 0 10px rgba(99,102,241,0); }
+      100% { box-shadow: 0 0 0 0   rgba(99,102,241,0); }
+    }
+  </style>
 
-          <!-- Processed video result -->
-          <div class="video-wrap" id="upload-video-wrap" hidden>
-            <img id="upload-result-img" alt="Processed exercise video with skeleton overlay and rep count" />
-          </div>
 
-        </div>
-      </section>
-
-    </main>
-
-    <footer class="app-footer">
-      ActionCount · RTMPose · FastAPI · WebRTC
-    </footer>
-
-  </div><!-- /app-shell -->
-
-  <!-- Toast notification -->
-  <div id="save-toast">✅ Set saved to your history!</div>
-
+  <!-- ═══════════════════════════════════════════════════════
+       SCRIPTS — load order unchanged
+       ═══════════════════════════════════════════════════════ -->
   <script src="/static/js/api.js"></script>
   <script>
-    // Async auth guard — validate token against backend on every page load
     (async function authGuard() {
-      if (!Auth.isLoggedIn()) {
-        window.location.href = '/login';
+      if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+      // First visit this session — show the welcome page
+      if (!sessionStorage.getItem('seen_welcome')) {
+        window.location.href = '/welcome';
         return;
       }
-      // Verify the stored token is still valid
       try {
         await apiFetch('/api/user/profile');
-        // Token is valid — show the username
         document.getElementById('nav-username').textContent = Auth.username();
       } catch (err) {
-        // Token is invalid or expired — clear and redirect
         clearToken();
         window.location.href = '/login';
       }
     })();
   </script>
-  <script src="app.js" type="module"></script>
+  <script src="/static/js/constants.js"></script>
+  <script src="/static/js/session.js"></script>
+  <script src="/static/js/live.js"></script>
+  <script src="/static/js/upload.js"></script>
+  <script src="/static/app.js"></script>
   <script src="/static/js/tracker.js"></script>
+
+  <!-- Nav slide-down on hover-zone -->
+  <script>
+  (function () {
+    const nav     = document.getElementById('tracker-nav');
+    const trigger = document.getElementById('nav-trigger');
+    if (!nav || !trigger) return;
+    let hideTimer = null;
+    function showNav() {
+      clearTimeout(hideTimer);
+      nav.classList.add('nav--visible');
+    }
+    function scheduleHide() {
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => nav.classList.remove('nav--visible'), 600);
+    }
+    trigger.addEventListener('mouseenter', showNav);
+    trigger.addEventListener('mouseleave', scheduleHide);
+    nav.addEventListener('mouseenter', showNav);
+    nav.addEventListener('mouseleave', scheduleHide);
+  })();
+  </script>
+
+  <!-- Three.js + post-processing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/shaders/CopyShader.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/EffectComposer.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/RenderPass.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/postprocessing/ShaderPass.js"></script>
+  <script src="/static/js/hud.js"></script>
+  <script src="/static/js/overlay.js"></script>
+
+  <!-- Friday client -->
+  <script>
+  (function () {
+    'use strict';
+
+    // ── Frontend command dispatcher ──────────────────────────────────────────
+    function dispatchFrontendCommand(cmd) {
+      console.log('[Friday] frontend_command:', cmd);
+      switch (cmd) {
+
+        case 'start_camera': {
+          const btn = document.getElementById('btn-start-camera');
+          if (btn && !btn.hidden && !btn.disabled) btn.click();
+          break;
+        }
+
+        case 'stop_camera': {
+          const btn = document.getElementById('btn-stop-camera');
+          if (btn && !btn.hidden) btn.click();
+          break;
+        }
+
+        case 'save_set': {
+          const btn = document.getElementById('btn-save-set');
+          if (btn && !btn.disabled) btn.click();
+          break;
+        }
+
+        case 'next_set': {
+          // Auto-save if there are unsaved reps, then reset for next set
+          const repEl  = document.getElementById('rep-count');
+          const reps   = repEl ? parseInt(repEl.textContent || '0', 10) : 0;
+          const saveBtn = document.getElementById('btn-save-set');
+
+          if (reps > 0 && saveBtn && !saveBtn.disabled) {
+            // Mirror btn-save-set click — tracker.js will save + auto-reset
+            saveBtn.click();
+          } else {
+            // Nothing to save, just reset
+            const resetBtn = document.getElementById('btn-reset');
+            if (resetBtn) resetBtn.click();
+          }
+          break;
+        }
+
+        case 'reset_reps': {
+          const btn = document.getElementById('btn-reset');
+          if (btn) btn.click();
+          break;
+        }
+
+        case 'overlay_toggle': {
+          const w = document.getElementById('fullscreen-camera-wrap');
+          if (w) w.style.opacity = w.style.opacity === '0' ? '1' : '0';
+          break;
+        }
+
+        default:
+          console.log('[Friday] unhandled command:', cmd);
+      }
+    }
+
+    // ── FridayHUD object ─────────────────────────────────────────────────────
+    const FridayHUD = {
+      _dismissTimer: null,
+      showCaloriePopup(data) {
+        const popup     = document.getElementById('friday-calorie-popup');
+        const foodsList = document.getElementById('friday-calorie-foods');
+        const totalEl   = document.getElementById('friday-calorie-total');
+        const confBadge = document.getElementById('friday-calorie-confidence');
+        const notesEl   = document.getElementById('friday-calorie-notes');
+        if (!popup) return;
+        const confColours = { high:'#10b981', medium:'#f59e0b', low:'#ef4444' };
+        const conf = (data.confidence||'low').toLowerCase();
+        confBadge.textContent = conf.toUpperCase();
+        confBadge.style.color = confColours[conf]||'#9ca3af';
+        confBadge.style.background = (confColours[conf]||'#9ca3af')+'22';
+        foodsList.innerHTML = (data.foods||[]).map(f=>`<li style="display:flex;justify-content:space-between;">
+          <span>${f.name} <span style="color:#64748b;font-size:.78rem;">${f.portion||''}</span></span>
+          <span style="color:#a5b4fc;font-weight:600;">${f.calories} kcal</span></li>`).join('');
+        totalEl.textContent = data.total_calories||0;
+        notesEl.textContent = data.notes||'';
+        popup.style.opacity='1'; popup.style.transform='translateX(-50%) translateY(0)';
+        clearTimeout(this._dismissTimer);
+        this._dismissTimer = setTimeout(()=>this.hideCaloriePopup(),8000);
+      },
+      hideCaloriePopup() {
+        const p=document.getElementById('friday-calorie-popup');
+        if(p){p.style.opacity='0';p.style.transform='translateX(-50%) translateY(24px)';}
+      },
+      playAudio(b64){try{new Audio('data:audio/mp3;base64,'+b64).play().catch(()=>{});}catch(_){}},
+      setSpeakingIndicator(active){
+        const d=document.getElementById('friday-speaking-dot');
+        if(d)d.style.display=active?'flex':'none';
+      },
+    };
+
+    // ── WebSocket (reconnects automatically) ─────────────────────────────────
+    let _fridayWs = null;
+
+    function openFridayWS() {
+      const token = localStorage.getItem('access_token') || localStorage.getItem('ac_token');
+      if (!token) return;
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      _fridayWs = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}`);
+
+      _fridayWs.onopen = function () {
+        // Tracker page always starts in voice mode immediately
+        _fridayWs.send(JSON.stringify({ type: 'set_channel', data: { channel: 'voice' } }));
+        console.log('[Friday] connected — channel: voice');
+      };
+
+      _fridayWs.onmessage = function (evt) {
+        try {
+          const msg = JSON.parse(evt.data);
+          if (msg.type === 'calorie_result')    FridayHUD.showCaloriePopup(msg.data);
+          else if (msg.type === 'friday_audio') FridayHUD.playAudio(msg.data.audio_b64);
+          else if (msg.type === 'friday_speaking') FridayHUD.setSpeakingIndicator(msg.data.active);
+          else if (msg.type === 'frontend_command') dispatchFrontendCommand(msg.data.command);
+        } catch(_) {}
+      };
+
+      _fridayWs.onclose = () => setTimeout(openFridayWS, 3000);
+      _fridayWs.onerror = () => _fridayWs.close();
+    }
+
+    function setFridayChannel(channel) {
+      if (_fridayWs && _fridayWs.readyState === WebSocket.OPEN)
+        _fridayWs.send(JSON.stringify({ type: 'set_channel', data: { channel } }));
+    }
+
+    window.addEventListener('load', openFridayWS);
+    window.FridayHUD = FridayHUD;
+    window.setFridayChannel = setFridayChannel;
+  })();
+  </script>
+
 </body>
 </html>

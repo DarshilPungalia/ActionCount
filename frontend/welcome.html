@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Welcome to ActionCount — your AI-powered real-time exercise rep counter." />
+  <title>Welcome — ActionCount</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #050810;
+      --surface:    rgba(255,255,255,0.035);
+      --border:     rgba(255,255,255,0.07);
+      --cyan:       #06b6d4;
+      --indigo:     #6366f1;
+      --green:      #10b981;
+      --text:       #f1f5f9;
+      --muted:      #64748b;
+      --glow-cyan:  0 0 24px rgba(6,182,212,0.35);
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 80% 60% at 50% -10%, rgba(99,102,241,0.18) 0%, transparent 70%),
+        radial-gradient(ellipse 60% 50% at 80% 80%,  rgba(6,182,212,0.10) 0%, transparent 70%),
+        #050810;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1.5rem;
+      overflow-x: hidden;
+    }
+
+    /* ── Entrance animation ─────────────────────────────────────────────── */
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0);    }
+    }
+    .animate-in {
+      opacity: 0;
+      animation: fadeUp 0.6s ease-out forwards;
+    }
+    .delay-1 { animation-delay: 0.1s; }
+    .delay-2 { animation-delay: 0.2s; }
+    .delay-3 { animation-delay: 0.35s; }
+    .delay-4 { animation-delay: 0.5s; }
+
+    /* ── Logo row ───────────────────────────────────────────────────────── */
+    .logo-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 3rem;
+    }
+    .logo-icon { font-size: 2rem; }
+    .logo-text {
+      font-size: 1.1rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, var(--indigo), var(--green));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    /* ── Greeting block ─────────────────────────────────────────────────── */
+    .greeting-block {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    .greeting-sub {
+      font-size: 1rem;
+      font-weight: 300;
+      color: rgba(255,255,255,0.45);
+      letter-spacing: 0.02em;
+      margin-bottom: 6px;
+    }
+    .greeting-sub > span[data-username] {
+      color: rgba(255,255,255,0.55);
+    }
+    .greeting-main {
+      font-size: clamp(2.2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      line-height: 1.1;
+      color: #fff;
+      text-shadow: var(--glow-cyan);
+      letter-spacing: -0.02em;
+    }
+    .greeting-main > span[data-username] {
+      background: linear-gradient(135deg, var(--cyan), var(--indigo));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .tagline {
+      margin-top: 1rem;
+      font-size: 0.9rem;
+      font-weight: 400;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+
+    /* ── Divider ─────────────────────────────────────────────────────────── */
+    .divider {
+      width: min(480px, 100%);
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+      margin: 2rem auto;
+    }
+
+    /* ── Info cards ──────────────────────────────────────────────────────── */
+    .cards-row {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: 100%;
+      max-width: 860px;
+    }
+
+    .card {
+      flex: 1 1 220px;
+      max-width: 280px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.4rem 1.2rem;
+      backdrop-filter: blur(12px);
+      transition: border-color 0.25s, transform 0.25s, box-shadow 0.25s;
+      cursor: default;
+    }
+    .card:hover {
+      border-color: rgba(99,102,241,0.35);
+      transform: translateY(-4px);
+      box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+    }
+
+    .card-icon {
+      font-size: 1.8rem;
+      margin-bottom: 0.75rem;
+    }
+    .card-title {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.4rem;
+    }
+    .card-desc {
+      font-size: 0.78rem;
+      font-weight: 400;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    /* ── CTA ─────────────────────────────────────────────────────────────── */
+    .cta-row {
+      margin-top: 2.5rem;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.65rem 1.4rem;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      text-decoration: none;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--indigo), #8b5cf6);
+      color: #fff;
+      box-shadow: 0 4px 18px rgba(99,102,241,0.3);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(99,102,241,0.45);
+    }
+    .btn-ghost {
+      background: var(--surface);
+      color: rgba(255,255,255,0.7);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover {
+      background: rgba(255,255,255,0.06);
+      color: #fff;
+    }
+
+    /* ── Footer ──────────────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 3rem;
+      font-size: 0.72rem;
+      color: rgba(100,116,139,0.6);
+      text-align: center;
+      letter-spacing: 0.04em;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Logo -->
+  <div class="logo-row animate-in">
+    <span class="logo-icon">🏋️</span>
+    <span class="logo-text">ActionCount</span>
+  </div>
+
+  <!-- Greeting -->
+  <div class="greeting-block animate-in delay-1">
+    <p class="greeting-sub">Hello, <span data-username>…</span></p>
+    <h1 class="greeting-main">
+      Welcome back,&nbsp;<span data-username>…</span>
+    </h1>
+    <p class="tagline">Real-time rep counting — powered by RTMPose.</p>
+  </div>
+
+  <!-- Divider -->
+  <div class="divider animate-in delay-2"></div>
+
+  <!-- Info cards -->
+  <div class="cards-row animate-in delay-3">
+
+    <div class="card">
+      <div class="card-icon">📷</div>
+      <div class="card-title">Live Camera</div>
+      <div class="card-desc">
+        Stream your webcam feed in real time. The AI detects your pose every frame
+        and counts reps with sub-second latency.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-icon">🎬</div>
+      <div class="card-title">Video Upload</div>
+      <div class="card-desc">
+        Drop any workout video — MP4, MOV, AVI or WebM — and get an annotated
+        replay with full rep counts and form feedback.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-icon">🤖</div>
+      <div class="card-title">Detection Engine</div>
+      <div class="card-desc">
+        Backed by RTMPose via ONNX Runtime for hardware-accelerated 17-keypoint
+        skeleton inference. No cloud dependency required.
+      </div>
+    </div>
+
+  </div>
+
+  <!-- CTA buttons -->
+  <div class="cta-row animate-in delay-4">
+    <a href="/" class="btn btn-primary">🚀 Open Tracker</a>
+    <a href="/dashboard" class="btn btn-ghost">📊 Dashboard</a>
+  </div>
+
+  <p class="footer animate-in delay-4">
+    ActionCount · RTMPose · FastAPI · WebRTC
+  </p>
+
+  <script src="/static/js/api.js"></script>
+  <script>
+  (async function () {
+    'use strict';
+
+    // Guard: must be logged in
+    if (!Auth.isLoggedIn()) {
+      window.location.href = '/login';
+      return;
+    }
+
+    try {
+      const { username } = await apiFetch('/api/me');
+      // Mark this session so the tracker doesn't redirect back here
+      sessionStorage.setItem('seen_welcome', '1');
+      document.querySelectorAll('[data-username]').forEach(function (el) {
+        el.textContent = username;
+      });
+    } catch (_) {
+      window.location.href = '/login';
+    }
+  })();
+  </script>
+
+  <script>
+  // Open Friday WebSocket in TEXT mode — voice activates only on the tracker
+  (function openFridayText() {
+    const token = localStorage.getItem('access_token') || localStorage.getItem('ac_token');
+    if (!token) return;
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}`);
+    ws.onopen = function () {
+      ws.send(JSON.stringify({ type: 'set_channel', data: { channel: 'text' } }));
+    };
+    ws.onclose = function () { setTimeout(openFridayText, 3000); };
+    ws.onerror = function () { ws.close(); };
+  })();
+  </script>
+
+</body>
+</html>

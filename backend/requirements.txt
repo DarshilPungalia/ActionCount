@@ -39,3 +39,11 @@ ultralytics
 
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch
+
+# Friday AI Assistant
+httpx
+elevenlabs
+azure-cognitiveservices-speech
+langgraph
+langgraph-checkpoint-mongodb
+langchain-openai

@@ -35,6 +35,7 @@ GET  /chatbot                   → frontend/chatbot.html
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -76,9 +77,9 @@ for p in (str(BACKEND_DIR), str(ROOT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from backend.utils.session_manager import SessionManager  # noqa: E402
-from backend.utils import db                              # noqa: E402
-from backend.utils.validation import (                        # noqa: E402
+from backend.utils.session_manager import SessionManager  
+from backend.utils import db                              
+from backend.utils.validation import (                        
     SignupRequest, LoginRequest, TokenResponse,
     UserProfile, UserProfileResponse,
     SaveWorkoutRequest, WorkoutHistoryResponse, WorkoutStatsResponse,
@@ -87,7 +88,10 @@ from backend.utils.validation import (                        # noqa: E402
     MetricLogRequest, MetricPoint, MetricsResponse,
     ChatRequest, ChatResponse, ChatMessage,
 )
-from backend.utils.chatbot import _get_response
+from backend.agent.chatbot import _get_response
+from backend.agent.graph import invoke_friday
+from backend.agent.tts import speak as tts_speak, to_ws_envelope, speaking_indicator
+from backend.agent.stt import FridaySTT
 
 # ── Security helpers ──────────────────────────────────────────────────────────
 pwd_context   = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -129,13 +133,43 @@ def _get_current_user(token: str = Depends(oauth2_scheme)) -> str:
         raise credentials_exception
     return username
 
+# ── Module-level Friday state ─────────────────────────────────────────────────
+# Keyed by session_id — stores the latest raw JPEG bytes for calorie scanning
+_active_frames: dict[str, bytes] = {}
+
+# Keyed by username — active Friday WebSocket connections
+_friday_ws_connections: dict[str, "WebSocket"] = {}
+
+# Current channel per username: "text" | "voice"
+_friday_channels: dict[str, str] = {}
+
+
+def _get_user_channel(username: str) -> str:
+    return _friday_channels.get(username, "text")
+
+
 # ── App init ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     SessionManager.instance()
+
+    # Start Azure Speech STT daemon
+    def _on_transcript(transcript: str):
+        """Called from the STT daemon thread on each recognized phrase."""
+        # Find any active Friday WS connection and dispatch via Friday graph
+        for username, ws in list(_friday_ws_connections.items()):
+            channel = _get_user_channel(username)
+            frame   = next(iter(_active_frames.values()), None) if _active_frames else None
+            asyncio.run_coroutine_threadsafe(
+                _handle_friday_message(ws, username, transcript, channel, frame),
+                asyncio.get_event_loop(),
+            )
+
+    FridaySTT.instance().start(_on_transcript)
     print("[ActionCount] Backend ready.")
     yield
+    FridaySTT.instance().stop()
     print("[ActionCount] Shutdown.")
 
 
@@ -192,6 +226,31 @@ async def serve_chatbot():
 async def serve_metrics():
     p = FRONTEND_DIR / "metrics.html"
     return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/welcome", response_class=HTMLResponse)
+async def serve_welcome():
+    """Serve the post-login welcome landing page."""
+    p = FRONTEND_DIR / "welcome.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+class MeResponse(BaseModel):
+    username: str
+    email: Optional[str] = None
+
+
+@app.get("/api/me", response_model=MeResponse)
+async def get_me(current_username: str = Depends(_get_current_user)):
+    """Return the current user's display name and email from the JWT."""
+    user = db.get_user(current_username)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return MeResponse(
+        username=current_username,
+        email=user.get("email"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -549,7 +608,7 @@ async def ws_stream(websocket: WebSocket, session_id: str):
         while True:
             data = await websocket.receive_bytes()
 
-            # ── Decode JPEG (record capture latency) ──────────────────────────
+            # ── Decode JPEG ───────────────────────────────────────────────────
             cap_t0 = time.monotonic()
             frame  = _decode_jpeg(data)
             session.metrics.record_capture(time.monotonic() - cap_t0)
@@ -558,7 +617,10 @@ async def ws_stream(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"error": "invalid frame"})
                 continue
 
-            # ── Hand frame to inference thread (non-blocking overwrite) ───────
+            # ── Store latest raw frame bytes for calorie scanner ──────────────
+            _active_frames[session_id] = data
+
+            # ── Hand frame to inference thread ────────────────────────────────
             session.atomic_frame.write(frame)
 
             # ── Return latest known result immediately (never blocks) ─────────
@@ -570,7 +632,182 @@ async def ws_stream(websocket: WebSocket, session_id: str):
     except WebSocketDisconnect:
         pass
     finally:
+        _active_frames.pop(session_id, None)
         mgr.destroy(session_id)
+
+
+# ── Friday WebSocket helper ────────────────────────────────────────────────────
+
+async def _handle_friday_message(
+    ws: "WebSocket",
+    username: str,
+    message: str,
+    channel: str,
+    raw_frame: Optional[bytes],
+) -> None:
+    """Invoke Friday agent and push audio + data back over the Friday WebSocket."""
+    try:
+        # Send command_ack immediately
+        await ws.send_json({"type": "command_ack",
+                            "data": {"command": message[:40], "status": "executing"}})
+
+        # Invoke Friday graph in thread (LLM call is blocking)
+        result = await asyncio.to_thread(
+            invoke_friday, username, message, channel, raw_frame
+        )
+
+        response_text = result.get("response", "")
+        intent        = result.get("intent", "chat")
+        tool_result   = result.get("tool_result") or {}
+
+        # Push calorie_result for food scans
+        if intent == "calorie_scan" and "foods" in tool_result:
+            await ws.send_json({"type": "calorie_result", "data": tool_result})
+
+        # Push frontend commands
+        if tool_result.get("frontend_command"):
+            await ws.send_json({"type": "frontend_command",
+                                "data": {"command": tool_result["frontend_command"]}})
+
+        # TTS audio
+        if response_text and channel == "voice":
+            await ws.send_json(speaking_indicator(True))
+            mp3 = await asyncio.to_thread(tts_speak, response_text)
+            if mp3:
+                await ws.send_json(to_ws_envelope(mp3, response_text))
+            await ws.send_json(speaking_indicator(False))
+        elif response_text:
+            # Text channel — send as plain friday_text message
+            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
+
+    except Exception as exc:
+        print(f"[FridayWS] _handle_friday_message error: {exc}")
+
+
+# ── /ws/friday WebSocket ──────────────────────────────────────────────────────
+
+@app.websocket("/ws/friday")
+async def ws_friday(websocket: WebSocket, token: Optional[str] = None):
+    """
+    Friday push channel.
+    Auth: ?token=<jwt>  (query param, since WS headers are browser-limited)
+    Channel is managed by the client via {type: set_channel, data: {channel: voice|text}} messages.
+    """
+    # Authenticate
+    if not token:
+        await websocket.close(code=4001)
+        return
+    try:
+        payload  = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username = payload.get("sub")
+        if not username or not db.get_user(username):
+            raise ValueError("invalid user")
+    except Exception:
+        await websocket.close(code=4003)
+        return
+
+    await websocket.accept()
+    _friday_ws_connections[username] = websocket
+    _friday_channels[username]       = "text"   # default channel
+
+    # Startup greeting
+    try:
+        profile   = db.get_user_profile(username) or {}
+        user_doc  = db.get_user(username) or {}
+        name      = user_doc.get("email", username).split("@")[0].capitalize()
+        is_new    = not user_doc.get("onboarding_complete", False)
+
+        if is_new:
+            greeting = f"Hello {name}, I've created your profile. Let's get started."
+        else:
+            greeting = f"Hello {name}, welcome back. What are you up to?"
+
+        # Send user_resolved event
+        await websocket.send_json({
+            "type": "user_resolved",
+            "data": {"username": username, "name": name,
+                     "calories_today": db.get_calories_today(username)},
+        })
+
+        # TTS greeting on voice channel only when user switches to voice
+        await websocket.send_json({"type": "friday_text", "data": {"text": greeting}})
+
+    except Exception as exc:
+        print(f"[FridayWS] greeting error: {exc}")
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+
+            msg_type = msg.get("type", "message")
+
+            # Channel switching
+            if msg_type == "set_channel":
+                new_channel = msg.get("data", {}).get("channel", "text")
+                if new_channel in ("text", "voice"):
+                    _friday_channels[username] = new_channel
+                    print(f"[FridayWS] {username} switched to channel={new_channel}")
+                continue
+
+            # Incoming message (text from chatbot UI or manual voice test)
+            if msg_type == "message":
+                text    = msg.get("data", {}).get("text", "").strip()
+                channel = _get_user_channel(username)
+                frame   = next(iter(_active_frames.values()), None) if _active_frames else None
+                if text:
+                    await _handle_friday_message(websocket, username, text, channel, frame)
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _friday_ws_connections.pop(username, None)
+        _friday_channels.pop(username, None)
+
+
+# ── Calorie History API ───────────────────────────────────────────────────────
+
+@app.get("/api/users/{username}/calories/today", response_model=dict)
+async def calories_today(username: str, current_user: str = Depends(_get_current_user)):
+    """Return today's total food-scan calories for the user."""
+    if current_user != username:
+        raise HTTPException(status_code=403, detail="Access denied")
+    total = db.get_calories_today(username)
+    profile = db.get_user_profile(username) or {}
+    return {"total_calories": total, "calorie_goal": profile.get("calorie_goal_daily", 2000)}
+
+
+@app.get("/api/users/{username}/calories/history")
+async def calories_history(
+    username: str,
+    limit: int = 20,
+    offset: int = 0,
+    current_user: str = Depends(_get_current_user),
+):
+    """Return paginated food-scan calorie logs."""
+    if current_user != username:
+        raise HTTPException(status_code=403, detail="Access denied")
+    logs        = db.get_calorie_logs(username, limit=limit, offset=offset)
+    total_today = db.get_calories_today(username)
+    return {"logs": logs, "total_today": total_today}
+
+
+@app.delete("/api/users/{username}/calories/{log_id}")
+async def delete_calorie_log(
+    username: str,
+    log_id: str,
+    current_user: str = Depends(_get_current_user),
+):
+    """Delete a specific calorie log entry."""
+    if current_user != username:
+        raise HTTPException(status_code=403, detail="Access denied")
+    deleted = db.delete_calorie_log(username, log_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Log entry not found")
+    return {"status": "deleted", "log_id": log_id}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -588,4 +825,4 @@ def _kps_to_list(kps: np.ndarray) -> list:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run("endpoint:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("endpoint:app", host="127.0.0.1", port=8000, reload=True)

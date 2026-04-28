@@ -27,7 +27,7 @@ from backend.counters.LegRaiseCounter import LegRaiseCounter
 from backend.counters.KneeRaiseCounter import KneeRaiseCounter
 from backend.counters.KneePressCounter import KneePressCounter
 from backend.utils import db
-from backend.utils.chatbot import _get_response
+from backend.agent.chatbot import _get_response
 from dotenv import load_dotenv
 
 load_dotenv()

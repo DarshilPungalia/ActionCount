@@ -143,3 +143,58 @@ class ChatMessage(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     history: list[ChatMessage]
+
+
+# ── Calorie Tracker ───────────────────────────────────────────────────────────
+
+class FoodItem(BaseModel):
+    name: str
+    portion: str
+    calories: float
+
+
+class CalorieLogEntry(BaseModel):
+    log_id: str
+    timestamp: str
+    foods: list[FoodItem]
+    total_calories: float
+    confidence: str   # "low" | "medium" | "high"
+    notes: str = ""
+
+
+class CalorieLogResponse(BaseModel):
+    logs: list[CalorieLogEntry]
+    total_today: float
+
+
+class CaloriesTodayResponse(BaseModel):
+    total_calories: float
+    calorie_goal: Optional[int] = None
+
+
+# ── Friday Memory & Unified Agent ─────────────────────────────────────────────
+
+class ConversationTurn(BaseModel):
+    turn_id: str
+    timestamp: str
+    channel: str       # "text" | "voice"
+    role: str          # "user" | "assistant"
+    content: str
+    attachments: list[dict] = []
+
+
+class DietPlan(BaseModel):
+    plan_id: str
+    created_at: str
+    title: str
+    content: str
+    is_active: bool
+
+
+class FulfilledRequest(BaseModel):
+    request_id: str
+    timestamp: str
+    type: str          # "diet_plan" | "calorie_scan" | "reminder" | "custom"
+    summary: str
+    ref_id: Optional[str] = None
+
