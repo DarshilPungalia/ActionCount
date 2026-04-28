@@ -203,16 +203,40 @@
   <!-- ═══════════════════════════════════════════════════════
        FRIDAY HUD OVERLAYS
        ═══════════════════════════════════════════════════════ -->
-  <div id="friday-speaking-dot" aria-hidden="true" style="
-    position:fixed; top:68px; right:20px; z-index:1000;
-    display:none; align-items:center; gap:8px;
-    background:rgba(10,14,26,0.75); backdrop-filter:blur(12px);
-    border:1px solid rgba(99,102,241,0.35); border-radius:999px;
-    padding:6px 14px 6px 10px; pointer-events:none;">
-    <span style="width:10px;height:10px;border-radius:50%;background:#6366f1;
-      box-shadow:0 0 0 0 rgba(99,102,241,0.7);animation:friday-pulse 1.2s infinite;"></span>
-    <span style="font-size:0.72rem;color:#a5b4fc;letter-spacing:0.05em;">FRIDAY</span>
+  <!-- ── Friday Waveform Indicator (top-right HUD) ───────────────────────── -->
+  <div id="friday-wave-hud" aria-hidden="true" style="
+    position:fixed; top:16px; left:50%; transform:translateX(-50%);
+    z-index:1000;
+    display:none; align-items:center; gap:10px;
+    background:rgba(8,11,22,0.82); backdrop-filter:blur(18px) saturate(1.5);
+    border:1px solid rgba(99,102,241,0.28); border-radius:999px;
+    padding:8px 16px 8px 12px; pointer-events:none;
+    box-shadow:0 4px 24px rgba(99,102,241,0.18), inset 0 1px 0 rgba(255,255,255,0.06);
+    transition:opacity 0.3s, transform 0.3s;">
+
+    <!-- Microphone icon (listening) / speaker icon (responding) -->
+    <span id="friday-wave-icon" style="font-size:0.9rem;transition:opacity 0.2s;">🎙️</span>
+
+    <!-- Waveform bars -->
+    <div id="friday-wave-bars" style="display:flex;align-items:center;gap:3px;height:22px;">
+      <span class="fw-bar" style="--i:0"></span>
+      <span class="fw-bar" style="--i:1"></span>
+      <span class="fw-bar" style="--i:2"></span>
+      <span class="fw-bar" style="--i:3"></span>
+      <span class="fw-bar" style="--i:4"></span>
+      <span class="fw-bar" style="--i:5"></span>
+      <span class="fw-bar" style="--i:6"></span>
+    </div>
+
+    <!-- Status label -->
+    <span id="friday-wave-label" style="
+      font-size:0.68rem;font-weight:600;letter-spacing:0.08em;
+      text-transform:uppercase;color:#a5b4fc;
+      white-space:nowrap;">Listening…</span>
   </div>
+
+  <!-- Legacy id kept so old setSpeakingIndicator calls still work -->
+  <div id="friday-speaking-dot" hidden style="display:none;"></div>
 
   <div id="friday-calorie-popup" aria-live="polite" style="
     position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(24px);
@@ -236,11 +260,63 @@
   </div>
 
   <style>
-    @keyframes friday-pulse {
-      0%   { box-shadow: 0 0 0 0   rgba(99,102,241,0.7); }
-      70%  { box-shadow: 0 0 0 10px rgba(99,102,241,0); }
-      100% { box-shadow: 0 0 0 0   rgba(99,102,241,0); }
+    /* ── Friday Waveform bar base ── */
+    .fw-bar {
+      display: inline-block;
+      width: 3px;
+      border-radius: 3px;
+      background: linear-gradient(180deg, #818cf8, #6366f1);
+      transform-origin: bottom center;
+      will-change: transform, height;
     }
+
+    /* LISTENING mode — fast erratic bounce, warm violet-blue */
+    #friday-wave-hud.fw-listening .fw-bar {
+      animation: fw-listen calc(0.5s + var(--i) * 0.06s) ease-in-out infinite alternate;
+      background: linear-gradient(180deg, #93c5fd, #6366f1);
+    }
+    @keyframes fw-listen {
+      0%   { height: 4px;  opacity: 0.55; }
+      25%  { height: 18px; opacity: 1;    }
+      50%  { height: 8px;  opacity: 0.75; }
+      75%  { height: 22px; opacity: 1;    }
+      100% { height: 6px;  opacity: 0.6;  }
+    }
+    /* phase offset per bar so they don't all move together */
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(1) { animation-delay: 0.00s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(2) { animation-delay: 0.07s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(3) { animation-delay: 0.14s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(4) { animation-delay: 0.05s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(5) { animation-delay: 0.11s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(6) { animation-delay: 0.03s; }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(7) { animation-delay: 0.09s; }
+
+    /* RESPONDING mode — slow smooth sine-like swell, teal-violet */
+    #friday-wave-hud.fw-responding .fw-bar {
+      animation: fw-respond 1.1s ease-in-out infinite alternate;
+      background: linear-gradient(180deg, #34d399, #6366f1);
+    }
+    @keyframes fw-respond {
+      0%   { height: 5px;  opacity: 0.6; }
+      100% { height: 20px; opacity: 1;   }
+    }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(1) { animation-delay: 0.00s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(2) { animation-delay: 0.16s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(3) { animation-delay: 0.32s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(4) { animation-delay: 0.48s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(5) { animation-delay: 0.32s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(6) { animation-delay: 0.16s; }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(7) { animation-delay: 0.00s; }
+
+    /* IDLE — all bars at minimum, no animation */
+    #friday-wave-hud .fw-bar {
+      height: 4px;
+      opacity: 0.35;
+    }
+
+    /* border glow tints per mode */
+    #friday-wave-hud.fw-listening  { border-color: rgba(147,197,253,0.45); box-shadow: 0 4px 28px rgba(99,102,241,0.28), inset 0 1px 0 rgba(255,255,255,0.06); }
+    #friday-wave-hud.fw-responding { border-color: rgba(52,211,153,0.40);  box-shadow: 0 4px 28px rgba(52,211,153,0.22), inset 0 1px 0 rgba(255,255,255,0.06); }
   </style>
 
 
@@ -394,9 +470,50 @@
         if(p){p.style.opacity='0';p.style.transform='translateX(-50%) translateY(24px)';}
       },
       playAudio(b64){try{new Audio('data:audio/mp3;base64,'+b64).play().catch(()=>{});}catch(_){}},
-      setSpeakingIndicator(active){
-        const d=document.getElementById('friday-speaking-dot');
-        if(d)d.style.display=active?'flex':'none';
+
+      // ── Waveform HUD helpers ───────────────────────────────────────────────
+      _waveHud() { return document.getElementById('friday-wave-hud'); },
+      _setMode(mode) {
+        // mode: 'listening' | 'responding' | 'idle'
+        const hud   = this._waveHud();
+        const icon  = document.getElementById('friday-wave-icon');
+        const label = document.getElementById('friday-wave-label');
+        if (!hud) return;
+        hud.classList.remove('fw-listening','fw-responding');
+        if (mode === 'listening') {
+          hud.style.display = 'flex';
+          hud.classList.add('fw-listening');
+          if (icon)  icon.textContent  = '🎙️';
+          if (label) label.textContent = 'Listening…';
+        } else if (mode === 'responding') {
+          hud.style.display = 'flex';
+          hud.classList.add('fw-responding');
+          if (icon)  icon.textContent  = '🤖';
+          if (label) label.textContent = 'Friday';
+        } else {
+          hud.style.display = 'none';
+        }
+      },
+
+      setSpeakingIndicator(active) {
+        this._setMode(active ? 'responding' : 'idle');
+        // Keep legacy element in sync just in case
+        const d = document.getElementById('friday-speaking-dot');
+        if (d) d.style.display = active ? 'flex' : 'none';
+      },
+
+      setListeningIndicator(active) {
+        // Flash the listening wave briefly when Azure STT fires a recognized event.
+        // Auto-hides after 3 s so it doesn't stay on during silence.
+        if (!active) { this._setMode('idle'); return; }
+        const hud = this._waveHud();
+        if (hud && hud.classList.contains('fw-responding')) return; // don't interrupt speaking
+        this._setMode('listening');
+        // Auto-dismiss after 3 s if no new event arrives
+        clearTimeout(this._listenTimer);
+        this._listenTimer = setTimeout(() => {
+          if (this._waveHud()?.classList.contains('fw-listening')) this._setMode('idle');
+        }, 3000);
       },
     };
 
@@ -413,19 +530,23 @@
         // Tracker page always starts in voice mode immediately
         _fridayWs.send(JSON.stringify({ type: 'set_channel', data: { channel: 'voice' } }));
         console.log('[Friday] connected — channel: voice');
+        // Show listening indicator — Friday is always ready for voice commands
+        // NOTE: indicator stays hidden until Azure STT fires a recognized event
+        console.log('[Friday] WS connected — voice channel active (server-side mic, no browser permission needed)');
       };
 
       _fridayWs.onmessage = function (evt) {
         try {
           const msg = JSON.parse(evt.data);
-          if (msg.type === 'calorie_result')    FridayHUD.showCaloriePopup(msg.data);
-          else if (msg.type === 'friday_audio') FridayHUD.playAudio(msg.data.audio_b64);
+          if (msg.type === 'calorie_result')       FridayHUD.showCaloriePopup(msg.data);
+          else if (msg.type === 'friday_audio')    FridayHUD.playAudio(msg.data.audio_b64);
           else if (msg.type === 'friday_speaking') FridayHUD.setSpeakingIndicator(msg.data.active);
+          else if (msg.type === 'friday_listening') FridayHUD.setListeningIndicator(msg.data.active);
           else if (msg.type === 'frontend_command') dispatchFrontendCommand(msg.data.command);
         } catch(_) {}
       };
 
-      _fridayWs.onclose = () => setTimeout(openFridayWS, 3000);
+      _fridayWs.onclose = () => { FridayHUD._setMode('idle'); setTimeout(openFridayWS, 3000); };
       _fridayWs.onerror = () => _fridayWs.close();
     }
 
