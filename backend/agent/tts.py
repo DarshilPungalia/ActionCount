@@ -6,10 +6,13 @@ Azure Cognitive Services Text-to-Speech REST wrapper for the Friday AI assistant
 - `speak(text)` → raw MP3 bytes (sync, safe to call from a thread)
 - `to_ws_envelope(mp3_bytes, text_hint)` → dict ready for WebSocket send_json
 
-Required env vars:
-  AZURE_TTS_KEY         — API key for the darshil2-resource Azure resource
-  AZURE_TTS_ENDPOINT    — e.g. https://darshil2-resource.services.ai.azure.com
-  AZURE_TTS_VOICE       — optional, defaults to en-US-JennyNeural
+Config priority (set in .env):
+  1. AZURE_TTS_REGION   — e.g. "eastus2"  (PREFERRED)
+     + AZURE_TTS_KEY
+     → uses https://<region>.tts.speech.microsoft.com/cognitiveservices/v1
+  2. AZURE_TTS_ENDPOINT — custom endpoint (fallback)
+     + AZURE_TTS_KEY
+     → appends /cognitiveservices/v1 if it's a base URL
 
 Failures are caught and logged — never crash the caller.
 """
@@ -24,15 +27,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_SPEECH_KEY = os.getenv("AZURE_TTS_KEY", "")
-_TTS_BASE   = os.getenv(
-    "AZURE_TTS_ENDPOINT",
-    "https://darshil2-resource.services.ai.azure.com",
-).rstrip("/")
-_VOICE      = os.getenv("AZURE_TTS_VOICE", "en-US-JennyNeural")
+_SPEECH_KEY  = os.getenv("AZURE_TTS_KEY", "")
+_TTS_REGION  = os.getenv("AZURE_TTS_REGION", "")       # e.g. "eastus2"
+_TTS_BASE    = os.getenv("AZURE_TTS_ENDPOINT", "").rstrip("/")
+_VOICE       = os.getenv("AZURE_TTS_VOICE", "en-US-JennyNeural")
 
-# Azure TTS REST path for multi-service endpoints
-_TTS_URL    = f"{_TTS_BASE}/cognitiveservices/v1"
+# Build the REST URL: prefer region-based URL (reliable), fall back to endpoint
+if _TTS_REGION:
+    _TTS_URL = f"https://{_TTS_REGION}.tts.speech.microsoft.com/cognitiveservices/v1"
+    print(f"[FridayTTS] Using region-based URL: {_TTS_URL}")
+elif _TTS_BASE:
+    _TTS_URL = f"{_TTS_BASE}/cognitiveservices/v1"
+    print(f"[FridayTTS] Using endpoint-based URL: {_TTS_URL}")
+else:
+    _TTS_URL = ""
+    print("[FridayTTS] ⚠  No AZURE_TTS_REGION or AZURE_TTS_ENDPOINT set — TTS disabled")
 
 
 def speak(text: str) -> Optional[bytes]:
@@ -43,7 +52,9 @@ def speak(text: str) -> Optional[bytes]:
     if not _SPEECH_KEY:
         print("[FridayTTS] AZURE_TTS_KEY not set — skipping TTS")
         return None
-
+    if not _TTS_URL:
+        print("[FridayTTS] No TTS URL configured — skipping TTS")
+        return None
     if not text or not text.strip():
         return None
 
@@ -62,13 +73,14 @@ def speak(text: str) -> Optional[bytes]:
 
     try:
         import httpx
-
+        print(f"[FridayTTS] POST {_TTS_URL} ({len(text)} chars)")
         resp = httpx.post(_TTS_URL, content=ssml.encode("utf-8"), headers=headers, timeout=15.0)
         resp.raise_for_status()
+        print(f"[FridayTTS] ✅ Got {len(resp.content)} bytes of MP3")
         return resp.content
 
     except Exception as exc:
-        print(f"[FridayTTS] Azure TTS error: {exc}")
+        print(f"[FridayTTS] ❌ Azure TTS error: {exc}")
         return None
 
 

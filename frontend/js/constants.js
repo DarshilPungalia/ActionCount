@@ -6,7 +6,7 @@
 'use strict';
 
 // ── Processing constants ───────────────────────────────────────────────────────
-const API_BASE   = '';              // same origin as FastAPI server
+// NOTE: API_BASE is declared in api.js (= window.location.origin) — do NOT re-declare here
 const TARGET_FPS = 30;
 const FRAME_MS   = 1000 / TARGET_FPS;   // ~33.33 ms
 const PROCESS_W  = 640;

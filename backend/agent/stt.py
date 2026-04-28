@@ -3,27 +3,24 @@ friday_stt.py
 -------------
 Azure Cognitive Services Speech SDK — continuous recognition daemon thread.
 
-Uses a custom endpoint (services.ai.azure.com) instead of a region shorthand,
-which is required for Azure AI Foundry / multi-service resources.
-
-IMPORTANT — How the microphone works:
+IMPORTANT — How audio capture works:
   The Azure Speech SDK captures audio from the SERVER'S default microphone,
-  NOT the browser. The browser never requests mic access. The STT daemon runs
-  as a background thread on the machine running endpoint.py.
+  NOT the browser. No browser mic permission is ever requested.
+  The daemon runs as a background thread on the machine running endpoint.py.
 
-Usage:
-  stt = FridaySTT.instance()
-  stt.start(on_transcript_callback)   # called once on app startup
-  stt.stop()                          # called on app shutdown
+Config priority (set in .env):
+  1. AZURE_STT_REGION   — e.g. "eastus"  (PREFERRED — most reliable)
+     + AZURE_STT_KEY
+  2. AZURE_STT_ENDPOINT — custom endpoint, e.g. https://NAME.cognitiveservices.azure.com
+     + AZURE_STT_KEY
 
-Callbacks:
-  on_transcript(transcript: str)               — final recognized phrase
-  on_speech_start()                            — Azure VAD detected speech onset
-  on_speech_end()                              — Azure VAD detected end of utterance
+  NOTE: .services.ai.azure.com (AI Foundry REST) does NOT work with the
+  Speech SDK WebSocket protocol. Use a region or .cognitiveservices.azure.com.
 
-Required env vars:
-  AZURE_STT_KEY         — API key for the princedastan Azure resource
-  AZURE_STT_ENDPOINT    — e.g. https://princedastan.services.ai.azure.com
+Callbacks supplied to start():
+  callback(transcript: str)   — final recognised phrase
+  on_speech_start()           — Azure VAD detected speech onset
+  on_speech_end()             — Azure VAD detected end of utterance
 """
 
 from __future__ import annotations
@@ -36,13 +33,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_SPEECH_KEY   = os.getenv("AZURE_STT_KEY", "")
-_STT_ENDPOINT = os.getenv(
-    "AZURE_STT_ENDPOINT",
-    "https://princedastan.services.ai.azure.com",
-).rstrip("/")
+_SPEECH_KEY    = os.getenv("AZURE_STT_KEY", "")
+_STT_REGION    = os.getenv("AZURE_STT_REGION", "")          # e.g. "eastus"
+_STT_ENDPOINT  = os.getenv("AZURE_STT_ENDPOINT", "").rstrip("/")
 
 _TAG = "[FridaySTT]"
+
+
+def _build_speech_config(speechsdk):
+    """
+    Build SpeechConfig using the best available credentials.
+
+    Priority:
+      1. Region  — speechsdk.SpeechConfig(subscription=key, region=region)
+      2. Endpoint — speechsdk.SpeechConfig(subscription=key, endpoint=url)
+         NOTE: endpoint must be .cognitiveservices.azure.com, not .services.ai.azure.com
+    """
+    if _STT_REGION:
+        print(f"{_TAG} Config  : region={_STT_REGION!r} (recommended)")
+        cfg = speechsdk.SpeechConfig(subscription=_SPEECH_KEY, region=_STT_REGION)
+    elif _STT_ENDPOINT:
+        # Warn if endpoint looks like the AI Foundry REST domain which won't work
+        if "services.ai.azure.com" in _STT_ENDPOINT:
+            print(
+                f"{_TAG} ⚠  WARNING: AZURE_STT_ENDPOINT looks like an AI Foundry REST "
+                f"URL ({_STT_ENDPOINT!r}). The Speech SDK needs a region or a "
+                f".cognitiveservices.azure.com endpoint. Set AZURE_STT_REGION instead."
+            )
+        print(f"{_TAG} Config  : endpoint={_STT_ENDPOINT!r}")
+        cfg = speechsdk.SpeechConfig(subscription=_SPEECH_KEY, endpoint=_STT_ENDPOINT)
+    else:
+        raise RuntimeError(
+            "Neither AZURE_STT_REGION nor AZURE_STT_ENDPOINT is set. "
+            "Add AZURE_STT_REGION=<your-region> (e.g. eastus) to your .env file."
+        )
+
+    cfg.speech_recognition_language = "en-US"
+    return cfg
 
 
 class FridaySTT:
@@ -73,14 +100,17 @@ class FridaySTT:
     ) -> None:
         """Start the STT daemon thread. No-op if already running."""
         if not _SPEECH_KEY:
-            print(f"{_TAG} AZURE_STT_KEY not set — STT disabled. "
-                  "Voice commands will NOT work.")
+            print(f"{_TAG} AZURE_STT_KEY not set — STT disabled. Voice commands will NOT work.")
+            return
+        if not (_STT_REGION or _STT_ENDPOINT):
+            print(f"{_TAG} Neither AZURE_STT_REGION nor AZURE_STT_ENDPOINT set — STT disabled.")
+            print(f"{_TAG} Add AZURE_STT_REGION=eastus (or your region) to .env")
             return
         if self._thread and self._thread.is_alive():
             print(f"{_TAG} Daemon already running — ignoring duplicate start()")
             return
 
-        self._callback       = callback
+        self._callback        = callback
         self._on_speech_start = on_speech_start
         self._on_speech_end   = on_speech_end
         self._stop_event.clear()
@@ -89,15 +119,10 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Endpoint : {_STT_ENDPOINT}")
-        print(f"{_TAG} Language : en-US")
-        print(f"{_TAG} Mic      : SERVER default audio device "
-              "(browser does NOT need microphone permission)")
-        print(f"{_TAG} VAD      : Azure built-in — speaks only after silence "
-              "detection (~500 ms quiet = end of utterance)")
+        print(f"{_TAG} Mic     : SERVER default audio device (no browser permission needed)")
+        print(f"{_TAG} VAD     : Azure built-in — agent responds after ~500 ms silence")
 
     def stop(self) -> None:
-        """Signal the daemon to exit."""
         print(f"{_TAG} Stop requested.")
         self._stop_event.set()
 
@@ -110,45 +135,33 @@ class FridaySTT:
             print(f"{_TAG} Recognition loop attempt #{attempt}")
             try:
                 self._recognition_loop()
+                # Only reset if we were deliberately stopped
+                if self._stop_event.is_set():
+                    break
             except Exception as exc:
                 print(f"{_TAG} ❌ Error in recognition loop: {exc}")
-                wait = min(3.0 * attempt, 30.0)   # backoff up to 30 s
-                print(f"{_TAG} Retrying in {wait:.0f}s …")
+                wait = min(5.0, 2.0 + attempt * 0.5)   # gentle backoff, cap at 5s
+                print(f"{_TAG} Retrying in {wait:.1f}s …")
                 self._stop_event.wait(timeout=wait)
         print(f"{_TAG} Daemon exited cleanly.")
 
     def _recognition_loop(self) -> None:
         import azure.cognitiveservices.speech as speechsdk
 
-        # SDK v1.49.1: SpeechConfig.__init__ accepts endpoint= + subscription=
-        # directly — there is no from_endpoint() class method in this version.
-        cfg = speechsdk.SpeechConfig(
-            endpoint=_STT_ENDPOINT,
-            subscription=_SPEECH_KEY,
-        )
-        cfg.speech_recognition_language = "en-US"
+        cfg = _build_speech_config(speechsdk)
 
-        # Lower end-of-speech silence threshold so the agent responds faster.
-        # Default is 1500 ms; 800 ms is a good balance for fitness commands.
-        cfg.set_property(
-            speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
-            "800",
-        )
-        # Initial silence before first word (2 s)
-        cfg.set_property(
-            speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
-            "2000",
-        )
+        # Explicit default-mic AudioConfig avoids silent failures on some Windows configs
+        audio_cfg = speechsdk.audio.AudioConfig(use_default_microphone=True)
+        recognizer = speechsdk.SpeechRecognizer(speech_config=cfg, audio_config=audio_cfg)
 
-        recognizer = speechsdk.SpeechRecognizer(speech_config=cfg)
         done = threading.Event()
 
         # ── Event handlers ────────────────────────────────────────────────────
 
-        def _on_session_started(evt: speechsdk.SessionEventArgs) -> None:
-            print(f"{_TAG} ✅ Azure session started — now listening on server mic")
+        def _on_session_started(evt) -> None:
+            print(f"{_TAG} ✅ Azure session started — listening on server mic")
 
-        def _on_session_stopped(evt: speechsdk.SessionEventArgs) -> None:
+        def _on_session_stopped(evt) -> None:
             print(f"{_TAG} ⏹  Azure session stopped")
             done.set()
 
@@ -161,39 +174,66 @@ class FridaySTT:
                     print(f"{_TAG} on_speech_start callback error: {exc}")
 
         def _on_speech_end_detected(evt) -> None:
-            print(f"{_TAG} 🔇 Speech ENDED (VAD offset — waiting for transcript)")
+            print(f"{_TAG} 🔇 Speech ENDED (VAD silence — waiting for transcript)")
             if self._on_speech_end:
                 try:
                     self._on_speech_end()
                 except Exception as exc:
                     print(f"{_TAG} on_speech_end callback error: {exc}")
 
-        def _on_recognizing(evt: speechsdk.SpeechRecognitionEventArgs) -> None:
-            """Partial (in-progress) result — useful for debugging latency."""
-            partial = evt.result.text.strip()
+        def _on_recognizing(evt) -> None:
+            """Partial result — shows words as they stream in."""
+            partial = (evt.result.text or "").strip()
             if partial:
                 print(f"{_TAG} … partial: \"{partial}\"")
 
-        def _on_recognized(evt: speechsdk.SpeechRecognitionEventArgs) -> None:
-            text = evt.result.text.strip()
+        def _on_recognized(evt) -> None:
+            text = (evt.result.text or "").strip()
             if not text:
-                print(f"{_TAG} ⚠  Recognized empty text (background noise / silence)")
+                print(f"{_TAG} ⚠  Empty recognition (silence / background noise)")
                 return
             word_count = len(text.split())
             print(f"{_TAG} ✔  Recognized ({word_count} word{'s' if word_count != 1 else ''}): \"{text}\"")
-            print(f"{_TAG} → Dispatching transcript to Friday agent …")
+            print(f"{_TAG} → Dispatching to Friday agent …")
             if self._callback:
                 try:
                     self._callback(text)
                 except Exception as exc:
                     print(f"{_TAG} ❌ Transcript callback error: {exc}")
 
-        def _on_canceled(evt: speechsdk.SpeechRecognitionCanceledEventArgs) -> None:
-            reason = getattr(evt, "reason", "unknown")
-            error_code = getattr(evt, "error_code", None)
-            error_details = getattr(evt, "error_details", "")
-            print(f"{_TAG} ❌ Recognition canceled — reason={reason} "
-                  f"error_code={error_code} details={error_details!r}")
+        def _on_canceled(evt) -> None:
+            reason = "unknown"
+            code   = "N/A"
+            detail = ""
+            try:
+                cd     = evt.result.cancellation_details
+                reason = str(cd.reason)
+                detail = cd.error_details or ""        # the actual error message string
+                # error_code attribute name varies by SDK version
+                for attr in ("error_code", "ErrorCode", "cancellation_error_code"):
+                    if hasattr(cd, attr):
+                        code = str(getattr(cd, attr))
+                        break
+            except Exception as e1:
+                detail = f"(could not read cancellation_details: {e1})"
+
+            print(f"{_TAG} ❌ Recognition canceled")
+            print(f"{_TAG}    reason       : {reason}")
+            print(f"{_TAG}    error_code   : {code}")
+            print(f"{_TAG}    error_details: {detail or '(none)'}")
+
+            if "Error" in reason:
+                if not detail:
+                    print(f"{_TAG} 💡 CancellationReason.Error with no details = microphone issue")
+                    print(f"{_TAG}    → Windows Settings > Privacy > Microphone > Allow desktop apps")
+                    print(f"{_TAG}    → Or no microphone connected to this machine")
+                    print(f"{_TAG}    → Or mic locked by Teams/Zoom/Discord")
+                elif "AuthenticationFailure" in detail or "Unauthorized" in detail:
+                    print(f"{_TAG} 💡 Auth failure — double-check AZURE_STT_KEY in .env")
+                elif "connection" in detail.lower() or "network" in detail.lower():
+                    print(f"{_TAG} 💡 Network issue — check internet connectivity")
+                else:
+                    print(f"{_TAG} 💡 Error detail above should indicate the cause")
             done.set()
 
         # ── Wire up events ────────────────────────────────────────────────────

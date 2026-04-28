@@ -148,26 +148,55 @@ def _get_user_channel(username: str) -> str:
     return _friday_channels.get(username, "text")
 
 
-# ── App init ──────────────────────────────────────────────────────────────────
+def _broadcast_friday(msg: dict) -> None:
+    """
+    Push a WebSocket message to ALL active Friday voice connections.
+    Safe to call from a non-async thread (uses run_coroutine_threadsafe).
+    """
+    loop = asyncio.get_event_loop()
+    for username, ws in list(_friday_ws_connections.items()):
+        if _get_user_channel(username) == "voice":
+            asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    SessionManager.instance()
 
-    # Start Azure Speech STT daemon
+def _ensure_stt_running() -> None:
+    """
+    Lazily start the Azure STT daemon the first time a user switches to voice
+    channel. No-op if the daemon is already running.
+    """
+    stt = FridaySTT.instance()
+    if stt._thread and stt._thread.is_alive():
+        return  # already running
+
     def _on_transcript(transcript: str):
-        """Called from the STT daemon thread on each recognized phrase."""
-        # Find any active Friday WS connection and dispatch via Friday graph
+        print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 dispatching to agent for all voice users")
         for username, ws in list(_friday_ws_connections.items()):
             channel = _get_user_channel(username)
-            frame   = next(iter(_active_frames.values()), None) if _active_frames else None
+            if channel != "voice":
+                continue
+            frame = next(iter(_active_frames.values()), None) if _active_frames else None
+            print(f"[FridayWS] Invoking agent for {username!r} | frame={'yes' if frame else 'none'}")
             asyncio.run_coroutine_threadsafe(
                 _handle_friday_message(ws, username, transcript, channel, frame),
                 asyncio.get_event_loop(),
             )
 
-    FridaySTT.instance().start(_on_transcript)
-    print("[ActionCount] Backend ready.")
+    def _on_speech_start():
+        _broadcast_friday({"type": "friday_listening", "data": {"active": True}})
+
+    def _on_speech_end():
+        _broadcast_friday({"type": "friday_listening", "data": {"active": False}})
+
+    print("[FridaySTT] First voice connection — starting STT daemon")
+    stt.start(_on_transcript, on_speech_start=_on_speech_start, on_speech_end=_on_speech_end)
+
+
+# ── App init ──────────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    SessionManager.instance()
+    print("[ActionCount] Backend ready. STT will start on first voice connection.")
     yield
     FridaySTT.instance().stop()
     print("[ActionCount] Shutdown.")
@@ -646,42 +675,61 @@ async def _handle_friday_message(
     raw_frame: Optional[bytes],
 ) -> None:
     """Invoke Friday agent and push audio + data back over the Friday WebSocket."""
+    print(f"[FridayWS] ▶ Handling message for {username!r} "
+          f"| channel={channel!r} | text={message[:60]!r}")
     try:
         # Send command_ack immediately
         await ws.send_json({"type": "command_ack",
                             "data": {"command": message[:40], "status": "executing"}})
 
         # Invoke Friday graph in thread (LLM call is blocking)
+        print(f"[FridayWS] 🤖 Invoking Friday LangGraph agent …")
+        t0 = time.monotonic()
         result = await asyncio.to_thread(
             invoke_friday, username, message, channel, raw_frame
         )
+        elapsed = time.monotonic() - t0
+        print(f"[FridayWS] 🤖 Agent returned in {elapsed:.2f}s")
 
         response_text = result.get("response", "")
         intent        = result.get("intent", "chat")
         tool_result   = result.get("tool_result") or {}
 
+        print(f"[FridayWS]    intent={intent!r} | response_len={len(response_text)} chars")
+        if tool_result:
+            print(f"[FridayWS]    tool_result keys: {list(tool_result.keys())}")
+
         # Push calorie_result for food scans
         if intent == "calorie_scan" and "foods" in tool_result:
+            print(f"[FridayWS] 🍽  Sending calorie_result popup")
             await ws.send_json({"type": "calorie_result", "data": tool_result})
 
         # Push frontend commands
         if tool_result.get("frontend_command"):
+            cmd = tool_result["frontend_command"]
+            print(f"[FridayWS] 🎮 Sending frontend_command: {cmd!r}")
             await ws.send_json({"type": "frontend_command",
-                                "data": {"command": tool_result["frontend_command"]}})
+                                "data": {"command": cmd}})
 
         # TTS audio
         if response_text and channel == "voice":
+            print(f"[FridayWS] 🔊 Synthesising TTS for {len(response_text)}-char response …")
             await ws.send_json(speaking_indicator(True))
+            t1 = time.monotonic()
             mp3 = await asyncio.to_thread(tts_speak, response_text)
+            print(f"[FridayWS] 🔊 TTS done in {time.monotonic()-t1:.2f}s "
+                  f"({'got audio' if mp3 else 'no audio — check AZURE_TTS_KEY'})")
             if mp3:
                 await ws.send_json(to_ws_envelope(mp3, response_text))
             await ws.send_json(speaking_indicator(False))
+            print(f"[FridayWS] ✅ Response cycle complete for {username!r}")
         elif response_text:
             # Text channel — send as plain friday_text message
+            print(f"[FridayWS] 💬 Sending text response on text channel")
             await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
 
     except Exception as exc:
-        print(f"[FridayWS] _handle_friday_message error: {exc}")
+        print(f"[FridayWS] ❌ _handle_friday_message error for {username!r}: {exc}")
 
 
 # ── /ws/friday WebSocket ──────────────────────────────────────────────────────
@@ -750,7 +798,10 @@ async def ws_friday(websocket: WebSocket, token: Optional[str] = None):
                 new_channel = msg.get("data", {}).get("channel", "text")
                 if new_channel in ("text", "voice"):
                     _friday_channels[username] = new_channel
-                    print(f"[FridayWS] {username} switched to channel={new_channel}")
+                    print(f"[FridayWS] {username!r} switched to channel={new_channel!r}")
+                    if new_channel == "voice":
+                        # Start STT lazily — only when someone actually goes to voice mode
+                        _ensure_stt_running()
                 continue
 
             # Incoming message (text from chatbot UI or manual voice test)
