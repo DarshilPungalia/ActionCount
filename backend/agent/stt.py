@@ -28,7 +28,7 @@ Config (.env):
 from __future__ import annotations
 
 import threading
-import time
+from numpy import ndarray
 from typing import Callable, Optional
 
 _TAG = "[FridaySTT]"
@@ -235,7 +235,7 @@ class FridaySTT:
 
     # ── Transcription ─────────────────────────────────────────────────────────
 
-    def _transcribe(self, audio_np: "np.ndarray") -> None:
+    def _transcribe(self, audio_np: "ndarray") -> None:
         try:
             result = self._whisper_pipe({"array": audio_np, "sampling_rate": SAMPLE_RATE})
             text   = (result.get("text") or "").strip()
