@@ -64,7 +64,18 @@ const LiveModule = (() => {
     _metaListener = () => _syncCanvasSize();
     localVideo.addEventListener('loadedmetadata', _metaListener);
 
+    // Fix: enforce muted programmatically — HTML attribute alone is unreliable
+    // on element reuse across sessions in some browsers.
+    localVideo.muted = true;
     await localVideo.play();
+
+    // Fix: wait for the first decoded frame before starting the send loop.
+    // Prevents blank/black JPEG blobs being dispatched to the backend.
+    await new Promise(resolve => {
+      if (localVideo.readyState >= 2) return resolve();
+      localVideo.addEventListener('loadeddata', resolve, { once: true });
+    });
+
     _syncCanvasSize();
     cameraPlaceholder.classList.add('hidden');
 

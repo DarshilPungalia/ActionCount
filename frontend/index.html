@@ -38,6 +38,7 @@
       <div class="nav-right">
         <a href="/dashboard" class="nav-pill">Dashboard</a>
         <a href="/chatbot"   class="nav-pill">AI Coach</a>
+        <a href="/plans"     class="nav-pill">Plans</a>
         <a href="/metrics"   class="nav-pill">Metrics</a>
         <span id="nav-username" class="nav-user"></span>
         <button onclick="Auth.logout()" class="nav-logout">Logout</button>
@@ -56,6 +57,11 @@
 
     <!-- Skeleton canvas (SkeletonDrawer writes here) -->
     <canvas id="skeleton-canvas" aria-hidden="true"></canvas>
+
+    <!-- Upload MJPEG result — sits between video and skeleton so HUD/controls stay on top -->
+    <img id="upload-result-img"
+         style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;display:none;"
+         alt="Processed exercise video" />
 
     <!-- Placeholder shown before camera starts -->
     <div class="video-placeholder" id="camera-placeholder">
@@ -166,7 +172,9 @@
        UPLOAD PANEL — shown when upload tab active
        ═══════════════════════════════════════════════════════ -->
   <div id="panel-upload" class="upload-overlay" role="tabpanel" aria-labelledby="tab-upload" hidden>
-    <div class="upload-inner">
+
+    <!-- Drop-zone -->
+    <div class="upload-inner" id="upload-drop-section">
       <h2 style="font-size:1.1rem;font-weight:700;margin-bottom:1rem;color:#f1f5f9;">Upload Video</h2>
 
       <div id="drop-zone" class="drop-zone" role="button" tabindex="0"
@@ -186,12 +194,10 @@
         <div class="progress-bar" id="progress-bar"></div>
         <span class="progress-label" id="progress-label">Processing…</span>
       </div>
-
-      <div class="video-wrap" id="upload-video-wrap" hidden style="margin-top:1rem;">
-        <img id="upload-result-img" alt="Processed exercise video with skeleton overlay and rep count" />
-      </div>
     </div>
+
   </div>
+
 
 
   <!-- ═══════════════════════════════════════════════════════
@@ -237,6 +243,38 @@
 
   <!-- Legacy id kept so old setSpeakingIndicator calls still work -->
   <div id="friday-speaking-dot" hidden style="display:none;"></div>
+
+  <!-- ── Friday Voice Picker ──────────────────────────────────────────────── -->
+  <div id="friday-voice-picker" style="
+    position:fixed; top:62px; left:50%; transform:translateX(-50%);
+    z-index:999; display:none; align-items:center; gap:6px;
+    background:rgba(8,11,22,0.78); backdrop-filter:blur(14px);
+    border:1px solid rgba(255,255,255,0.08); border-radius:999px;
+    padding:5px 10px; pointer-events:auto;
+    font-family:'Inter',sans-serif; font-size:0.72rem; color:#64748b;
+    box-shadow:0 2px 12px rgba(0,0,0,0.35);">
+    <span style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:#475569;">Voice</span>
+    <button id="voice-btn-sebastian"
+      onclick="setFridayVoice('1SaGpH4wLZDmppsPYVpx','Sebastian')"
+      style="padding:3px 9px;border-radius:999px;border:1px solid transparent;
+             font-size:0.72rem;font-weight:600;cursor:pointer;
+             background:transparent;color:#94a3b8;transition:all .15s;"
+      title="Use Sebastian voice">Sebastian</button>
+    <span style="color:#1e293b;">|</span>
+    <button id="voice-btn-serafina"
+      onclick="setFridayVoice('4tRn1lSkEn13EVTuqb0g','Serafina')"
+      style="padding:3px 9px;border-radius:999px;border:1px solid transparent;
+             font-size:0.72rem;font-weight:600;cursor:pointer;
+             background:transparent;color:#94a3b8;transition:all .15s;"
+      title="Use Serafina voice">Serafina</button>
+  </div>
+  <style>
+    .friday-voice-active {
+      background: rgba(99,102,241,0.18) !important;
+      border-color: rgba(99,102,241,0.45) !important;
+      color: #a5b4fc !important;
+    }
+  </style>
 
   <div id="friday-calorie-popup" aria-live="polite" style="
     position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(24px);
@@ -559,6 +597,61 @@
     window.FridayHUD = FridayHUD;
     window.setFridayChannel = setFridayChannel;
   })();
+  </script>
+
+  <!-- ── Friday Voice Picker Logic ──────────────────────────────────────── -->
+  <script>
+  'use strict';
+
+  // Voice IDs
+  const _FRIDAY_VOICES = {
+    'sebastian': '1SaGpH4wLZDmppsPYVpx',
+    'serafina':  '4tRn1lSkEn13EVTuqb0g',
+  };
+
+  // Load user's current voice preference and highlight the correct button
+  (async function initVoicePicker() {
+    // Only show picker in voice mode (the WS opens in voice mode on this page)
+    const picker = document.getElementById('friday-voice-picker');
+    if (picker) picker.style.display = 'flex';
+    try {
+      const data = await apiFetch('/api/voices');
+      const activeId = data.default;
+      _highlightVoice(activeId);
+    } catch (_) {
+      // Non-fatal — just show with no highlight
+    }
+  })();
+
+  function _highlightVoice(voiceId) {
+    document.querySelectorAll('#friday-voice-picker button').forEach(btn => {
+      btn.classList.remove('friday-voice-active');
+    });
+    const map = {
+      '1SaGpH4wLZDmppsPYVpx': 'voice-btn-sebastian',
+      '4tRn1lSkEn13EVTuqb0g': 'voice-btn-serafina',
+    };
+    const btnId = map[voiceId];
+    if (btnId) document.getElementById(btnId)?.classList.add('friday-voice-active');
+  }
+
+  async function setFridayVoice(voiceId, voiceName) {
+    try {
+      await apiFetch('/api/user/voice', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ voice_id: voiceId }),
+      });
+      _highlightVoice(voiceId);
+      // Brief confirmation toast if available, else console
+      console.log(`[FridayVoice] Switched to ${voiceName} (${voiceId})`);
+      if (window.showToast) {
+        window.showToast(`🎙️ Voice: ${voiceName}`);
+      }
+    } catch (err) {
+      console.warn('[FridayVoice] Failed to set voice:', err.message);
+    }
+  }
   </script>
 
 </body>

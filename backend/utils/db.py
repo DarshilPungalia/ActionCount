@@ -75,6 +75,10 @@ def _memory_summaries():
     return _get_db()["memory_summaries"]
 
 
+def _workout_plans():
+    return _get_db()["workout_plans"]
+
+
 # ── Muscle group mapping ──────────────────────────────────────────────────────
 EXERCISE_MUSCLE_MAP: dict[str, str] = {
     # Arms
@@ -100,6 +104,31 @@ EXERCISE_MUSCLE_MAP: dict[str, str] = {
 }
 
 MUSCLE_GROUPS = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"]
+
+# Reverse map: muscle group → list of exercise keys (for replacement suggestions)
+MUSCLE_EXERCISE_MAP: dict[str, list[str]] = {
+    "Arms":      ["bicep_curl"],
+    "Chest":     ["pushup"],
+    "Back":      ["pullup"],
+    "Legs":      ["squat", "knee_press", "knee_raise", "leg_raise"],
+    "Shoulders": ["lateral_raise", "overhead_press"],
+    "Core":      ["situp", "crunch", "leg_raise", "knee_raise"],
+}
+
+# Canonical display names for exercise keys
+EXERCISE_DISPLAY_NAMES: dict[str, str] = {
+    "squat":          "Squat",
+    "pushup":         "Push-Up",
+    "bicep_curl":     "Bicep Curl",
+    "pullup":         "Pull-Up",
+    "lateral_raise":  "Lateral Raise",
+    "overhead_press": "Overhead Press",
+    "situp":          "Sit-Up",
+    "crunch":         "Crunch",
+    "leg_raise":      "Leg Raise",
+    "knee_raise":     "Knee Raise",
+    "knee_press":     "Knee Press",
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -585,3 +614,110 @@ def get_latest_memory_summary(username: str) -> Optional[dict]:
         sort=[("generated_at", -1)],
     )
     return doc
+
+
+# ── Workout Plans ─────────────────────────────────────────────────────────────
+# Schema per document:
+#   {
+#     "username":  str,
+#     "weekday":   str,          # "Mon" | "Tue" | "Wed" | "Thu" | "Fri" | "Sat" | "Sun"
+#     "exercises": [             # ordered list; UI can reorder via drag-and-drop
+#       {"exercise_key": str, "sets": int, "reps": int, "weight_kg": float}
+#     ],
+#     "created_at":  str,        # ISO datetime
+#     "updated_at":  str,
+#     "is_active":   bool,       # False when user explicitly deletes this day's plan
+#   }
+
+_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def save_workout_plan(username: str, weekday: str, exercises: list[dict]) -> dict:
+    """
+    Upsert the recurring workout plan for a given weekday.
+    `exercises` is an ordered list of {exercise_key, sets, reps, weight_kg}.
+    The plan repeats every week on this weekday until explicitly deleted.
+    """
+    if weekday not in _WEEKDAYS:
+        raise ValueError(f"Invalid weekday '{weekday}'. Must be one of {_WEEKDAYS}.")
+    now = datetime.utcnow().isoformat()
+    doc = {
+        "username":   username,
+        "weekday":    weekday,
+        "exercises":  exercises,
+        "updated_at": now,
+        "is_active":  True,
+    }
+    existing = _workout_plans().find_one({"username": username, "weekday": weekday})
+    if existing:
+        _workout_plans().update_one(
+            {"username": username, "weekday": weekday},
+            {"$set": {k: v for k, v in doc.items() if k != "username"}},
+        )
+    else:
+        doc["created_at"] = now
+        _workout_plans().insert_one(doc)
+    result = _workout_plans().find_one(
+        {"username": username, "weekday": weekday}, {"_id": 0, "username": 0}
+    )
+    return result or {}
+
+
+def get_workout_plan(username: str, weekday: str) -> Optional[dict]:
+    """Return the active recurring plan for `weekday`, or None if not set."""
+    if weekday not in _WEEKDAYS:
+        return None
+    doc = _workout_plans().find_one(
+        {"username": username, "weekday": weekday, "is_active": True},
+        {"_id": 0, "username": 0},
+    )
+    return doc
+
+
+def get_all_workout_plans(username: str) -> dict[str, Optional[dict]]:
+    """Return the full weekly schedule as {weekday: plan_or_None}."""
+    docs = _workout_plans().find(
+        {"username": username, "is_active": True},
+        {"_id": 0, "username": 0},
+    )
+    schedule: dict[str, Optional[dict]] = {day: None for day in _WEEKDAYS}
+    for doc in docs:
+        schedule[doc["weekday"]] = doc
+    return schedule
+
+
+def delete_workout_plan(username: str, weekday: str) -> bool:
+    """Soft-delete a day's plan (marks is_active=False). Returns True if found."""
+    result = _workout_plans().update_one(
+        {"username": username, "weekday": weekday},
+        {"$set": {"is_active": False, "updated_at": datetime.utcnow().isoformat()}},
+    )
+    return result.matched_count > 0
+
+
+def suggest_replacement_exercises(exercise_key: str, limit: int = 4) -> list[dict]:
+    """
+    Return up to `limit` alternative exercises from the same muscle group.
+    Each result: {exercise_key, display_name, muscle_group}
+    """
+    # Normalise key
+    key = exercise_key.lower().replace("-", "_").replace(" ", "_")
+    # Find the muscle group for the given exercise
+    display_name = EXERCISE_DISPLAY_NAMES.get(key, "")
+    muscle = EXERCISE_MUSCLE_MAP.get(display_name) or next(
+        (m for m, keys in MUSCLE_EXERCISE_MAP.items() if key in keys), None
+    )
+    if not muscle:
+        return []
+    # Return all same-group exercises except the current one
+    candidates = [
+        {
+            "exercise_key":  k,
+            "display_name":  EXERCISE_DISPLAY_NAMES.get(k, k),
+            "muscle_group":  muscle,
+        }
+        for k in MUSCLE_EXERCISE_MAP.get(muscle, [])
+        if k != key
+    ]
+    return candidates[:limit]
+

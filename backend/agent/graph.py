@@ -1,17 +1,20 @@
 """
 friday_graph.py
 ---------------
-Friday AI agent — built with LangGraph + AzureChatOpenAI.
+Friday AI agent — built with LangGraph.
+
+Primary LLM  : Anthropic Claude (langchain-anthropic)
+Fallback LLM : Google Gemini (langchain-google-genai) → original chatbot.py
 
 Graph:
   input → intent_node → [tool_node | clarify_node] → memory_write_node → response_node → END
 
 Both voice (/ws/friday) and text (/api/chat) invoke this graph with
   config = {"configurable": {"thread_id": username}}
-so all state — conversation history, diet plans, calorie logs — is shared.
+so all state — conversation history, diet plans, workout plans, calorie logs — is shared.
 
 Channel-aware output:
-  voice → 1-2 sentences, no markdown, speakable prose → piped to Eleven Labs
+  voice → 1-2 sentences, no markdown, speakable prose → piped to Kokoro TTS
   text  → full markdown allowed → returned to chatbot UI
 """
 
@@ -24,78 +27,104 @@ from typing import Annotated, Optional
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import AzureChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 load_dotenv()
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
-_AZURE_ENDPOINT = os.getenv("AZURE_FOUNDRY_ENDPOINT", "")
-_AZURE_API_KEY  = os.getenv("AZURE_FOUNDRY_API_KEY", "")
-_AZURE_MODEL    = os.getenv("AZURE_FOUNDRY_MODEL", "gpt-4o")
-_AGENT_NAME    = os.getenv("AGENT_NAME", "Friday")
+# ── LLM — Claude primary, Gemini fallback ─────────────────────────────────────
+_ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
+_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "")   # fill in .env; e.g. claude-3-5-sonnet-20241022
+_AGENT_NAME      = os.getenv("AGENT_NAME", "Friday")
 
-_llm: Optional[AzureChatOpenAI] = None
+_llm         = None
+_llm_lock_   = __import__("threading").Lock()
 
 
-def _get_llm() -> AzureChatOpenAI:
+def _get_llm():
+    """Return Claude if configured, else fall back to AzureChatOpenAI (legacy), else raise."""
     global _llm
-    if _llm is None:
-        if not _AZURE_ENDPOINT or not _AZURE_API_KEY:
-            raise ValueError("AZURE_FOUNDRY_ENDPOINT and AZURE_FOUNDRY_API_KEY must be set")
-        _llm = AzureChatOpenAI(
-            azure_endpoint=_AZURE_ENDPOINT,
-            api_key=_AZURE_API_KEY,
-            azure_deployment=_AZURE_MODEL,
-            api_version="2024-02-01",
-            temperature=0.4,
+    if _llm is not None:
+        return _llm
+    with _llm_lock_:
+        if _llm is not None:
+            return _llm
+
+        if _ANTHROPIC_KEY and _ANTHROPIC_MODEL:
+            try:
+                from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+                _llm = ChatAnthropic(
+                    api_key=_ANTHROPIC_KEY,
+                    model=_ANTHROPIC_MODEL,
+                    temperature=0.4,
+                    max_tokens=2048,
+                )
+                print(f"[Friday/LLM] ✅ Using Claude: {_ANTHROPIC_MODEL}")
+                return _llm
+            except Exception as exc:
+                print(f"[Friday/LLM] ⚠  Claude init failed ({exc}) — trying Gemini fallback")
+
+        # Gemini fallback
+        _GOOGLE_KEY = os.getenv("GOOGLE_API_KEY", "")
+        if _GOOGLE_KEY:
+            try:
+                from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: PLC0415
+                _llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    google_api_key=_GOOGLE_KEY,
+                    temperature=0.4,
+                )
+                print("[Friday/LLM] ✅ Fallback: Gemini 1.5 Flash")
+                return _llm
+            except Exception as exc:
+                print(f"[Friday/LLM] ⚠  Gemini fallback failed: {exc}")
+
+        raise ValueError(
+            "No LLM configured. Set ANTHROPIC_API_KEY + ANTHROPIC_MODEL "
+            "or GOOGLE_API_KEY in .env"
         )
-    return _llm
 
 
 # ── MongoDB Checkpointer ──────────────────────────────────────────────────────
-# Reuses the same Atlas cluster already configured in db.py via MONGODB_URI.
-# Checkpoints land in a separate 'friday_checkpoints' database within the same
-# cluster — no extra credentials needed.
-_MONGO_URI      = os.getenv("MONGODB_URI", "")
-_CHECKPOINT_DB  = "friday_checkpoints"
-
-_checkpointer = None
+_MONGO_URI     = os.getenv("MONGODB_URI", "")
+_CHECKPOINT_DB = "friday_checkpoints"
+_checkpointer  = None
 
 
 def _get_checkpointer():
-    """Lazily create the MongoDBSaver checkpointer (singleton)."""
     global _checkpointer
     if _checkpointer is None:
-        from langgraph.checkpoint.mongodb import MongoDBSaver
-        # MongoDBSaver manages its own MongoClient internally when built
-        # from a connection string — no context-manager needed for long-lived apps.
+        from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: PLC0415
         _checkpointer = MongoDBSaver.from_conn_string(
-            _MONGO_URI,
-            db_name=_CHECKPOINT_DB,
+            _MONGO_URI, db_name=_CHECKPOINT_DB
         )
     return _checkpointer
 
 
 # ── Command Registry ──────────────────────────────────────────────────────────
 COMMAND_REGISTRY = [
-    {"key": "calorie_scan",    "description": "Capture frame → AI vision → estimate calories → speak result"},
-    {"key": "calories_today",  "description": "Sum today's food scan calories and report"},
-    {"key": "calorie_history", "description": "Summarise recent food scan logs"},
-    {"key": "who_am_i",        "description": "Read back user profile + today's stats"},
-    {"key": "status",          "description": "System health summary"},
-    {"key": "overlay_toggle",  "description": "Toggle HUD overlay visibility"},
-    {"key": "screenshot",      "description": "Save current camera frame to disk"},
-    {"key": "diet_plan",       "description": "Generate + store a personalised diet plan"},
-    {"key": "reset_reps",      "description": "Reset the rep counter for the current set"},
-    {"key": "start_camera",    "description": "Start the live webcam / begin exercise session — triggered by phrases like 'let\'s start', 'start the camera', 'let\'s exercise', 'begin workout', 'go', 'start counting'"},
-    {"key": "stop_camera",     "description": "Stop the live webcam / end exercise session — triggered by phrases like 'stop', 'stop the camera', 'I\'m done', 'finish workout'"},
-    {"key": "save_set",        "description": "Save the current completed set of reps — triggered by phrases like 'save set', 'save my reps', 'log this set'"},
-    {"key": "next_set",        "description": "Save the current set (if reps > 0) and immediately start the next set — triggered by phrases like 'next set', 'let\'s do another set', 'start next set', 'one more set'"},
-    {"key": "shutdown",        "description": "Graceful app shutdown"},
-    {"key": "chat",            "description": "General conversation or question (default)"},
+    {"key": "calorie_scan",         "description": "Capture frame → AI vision → estimate calories → speak result"},
+    {"key": "calories_today",       "description": "Sum today's food scan calories and report"},
+    {"key": "calorie_history",      "description": "Summarise recent food scan logs"},
+    {"key": "who_am_i",             "description": "Read back user profile + today's stats"},
+    {"key": "status",               "description": "System health summary"},
+    {"key": "overlay_toggle",       "description": "Toggle HUD overlay visibility"},
+    {"key": "screenshot",           "description": "Save current camera frame to disk"},
+    {"key": "diet_plan",            "description": "Generate + store a personalised diet plan"},
+    {"key": "generate_workout_plan","description": (
+        "Generate a weekly workout plan tailored to user goals and equipment availability. "
+        "Ask the user for: target weekday(s), equipment available, preferred weight and rep range "
+        "if not already in their profile. Return structured JSON with exercises per day."
+    )},
+    {"key": "save_workout_plan",    "description": "Save the workout plan suggested in chat to the user's weekly schedule"},
+    {"key": "reset_reps",           "description": "Reset the rep counter for the current set"},
+    {"key": "start_camera",         "description": "Start the live webcam / begin exercise session"},
+    {"key": "stop_camera",          "description": "Stop the live webcam / end exercise session"},
+    {"key": "save_set",             "description": "Save the current completed set of reps"},
+    {"key": "next_set",             "description": "Save the current set (if reps > 0) and immediately start the next set"},
+    {"key": "shutdown",             "description": "Graceful app shutdown"},
+    {"key": "chat",                 "description": "General conversation or question (default)"},
 ]
 
 _COMMAND_LIST_STR = "\n".join(f"  {c['key']}: {c['description']}" for c in COMMAND_REGISTRY)
@@ -111,7 +140,7 @@ class AgentState(TypedDict):
     intent_confidence: float
     tool_result:       Optional[dict]
     response:          Optional[str]
-    latest_frame:      Optional[bytes]   # raw JPEG for calorie_scan; not persisted by checkpointer
+    latest_frame:      Optional[bytes]
 
 
 # ── Node: intent_node ─────────────────────────────────────────────────────────
@@ -159,11 +188,11 @@ def tool_node(state: AgentState) -> dict:
             if frame is None:
                 result = {"error": "no_frame"}
             else:
-                import numpy as np
-                import cv2 as _cv2
-                arr = np.frombuffer(frame, dtype=np.uint8)
+                import numpy as np   # noqa: PLC0415
+                import cv2 as _cv2   # noqa: PLC0415
+                arr       = np.frombuffer(frame, dtype=np.uint8)
                 frame_bgr = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
-                from backend.utils.calorie_tracker import scan_food_from_frame
+                from backend.utils.calorie_tracker import scan_food_from_frame  # noqa: PLC0415
                 result = scan_food_from_frame(frame_bgr, username)
 
         elif intent == "calories_today":
@@ -179,10 +208,32 @@ def tool_node(state: AgentState) -> dict:
                 "goal":           profile.get("target", "general_fitness"),
                 "weight_kg":      profile.get("weight_kg"),
                 "calories_today": db.get_calories_today(username),
+                "equipment":      profile.get("equipment_availability", []),
             }
 
         elif intent == "diet_plan":
             result = {"action": "generate_diet_plan"}
+
+        elif intent == "generate_workout_plan":
+            profile = db.get_user_profile(username) or {}
+            result  = {
+                "action":    "generate_workout_plan",
+                "goal":      profile.get("target", "general_fitness"),
+                "goals_extra": profile.get("goals_extra", ""),
+                "equipment": profile.get("equipment_availability", []),
+                "params":    state.get("intent_params") or {},
+            }
+
+        elif intent == "save_workout_plan":
+            # Params expected: {weekday: str, exercises: [{exercise_key, sets, reps, weight_kg}]}
+            params = state.get("intent_params") or {}
+            weekday   = params.get("weekday")
+            exercises = params.get("exercises", [])
+            if weekday and exercises:
+                saved = db.save_workout_plan(username, weekday, exercises)
+                result = {"saved": True, "plan": saved}
+            else:
+                result = {"error": "missing weekday or exercises in params"}
 
         elif intent == "status":
             result = {"status": "operational", "time": datetime.now().strftime("%H:%M")}
@@ -226,14 +277,13 @@ def memory_write_node(state: AgentState) -> dict:
 # ── Node: response_node ───────────────────────────────────────────────────────
 def response_node(state: AgentState) -> dict:
     """Generate Friday's reply, channel-aware."""
-    from backend.agent.memory import build_system_prompt
+    from backend.agent.memory import build_system_prompt  # noqa: PLC0415
 
     channel     = state.get("channel", "text")
     username    = state["username"]
     intent      = state.get("intent", "chat")
     tool_result = state.get("tool_result") or {}
 
-    # Fast-path: clarify
     if tool_result.get("clarify"):
         text = "I didn't catch that — could you repeat?"
         return {"response": text, "messages": [AIMessage(content=text)]}
@@ -242,7 +292,6 @@ def response_node(state: AgentState) -> dict:
         text = "I can't see anything to scan."
         return {"response": text, "messages": [AIMessage(content=text)]}
 
-    # Build context addendum from tool result
     addendum = _build_addendum(intent, tool_result)
     system   = build_system_prompt(username, channel=channel)
     full_sys = f"{system}\n\n{addendum}".strip() if addendum else system
@@ -291,8 +340,10 @@ def _build_addendum(intent: str, tool_result: dict) -> str:
 
     if intent == "who_am_i":
         r = tool_result
+        equip = ", ".join(r.get("equipment", [])) or "none specified"
         return (f"Profile: username={r.get('username')}, goal={r.get('goal')}, "
-                f"weight={r.get('weight_kg')} kg, calories today={r.get('calories_today')}. Report naturally.")
+                f"weight={r.get('weight_kg')} kg, calories today={r.get('calories_today')}, "
+                f"equipment={equip}. Report naturally.")
 
     if intent == "status":
         return "All systems operational. Report briefly."
@@ -300,6 +351,32 @@ def _build_addendum(intent: str, tool_result: dict) -> str:
     if intent == "diet_plan":
         return ("Generate a personalised 7-day diet plan for this user based on their profile. "
                 "Be specific with portions and macros.")
+
+    if intent == "generate_workout_plan":
+        r       = tool_result
+        goal    = r.get("goal", "general_fitness")
+        extra   = r.get("goals_extra", "")
+        equip   = ", ".join(r.get("equipment", [])) or "bodyweight only"
+        params  = r.get("params", {})
+        weight_hint = params.get("weight_kg", "as appropriate for user")
+        rep_hint    = params.get("rep_range", "8-12")
+        return (
+            "Generate a detailed weekly workout plan as a JSON object. "
+            "Schema: {\"Mon\": [{\"exercise_key\": str, \"sets\": int, \"reps\": int, \"weight_kg\": float}], ...}. "
+            f"User goal: {goal}. Additional notes: {extra or 'none'}. "
+            f"Available equipment: {equip}. "
+            f"Target weight range: {weight_hint} kg. Target rep range: {rep_hint}. "
+            "Include only rest days as empty arrays. "
+            "Valid exercise_key values: squat, pushup, bicep_curl, pullup, lateral_raise, "
+            "overhead_press, situp, crunch, leg_raise, knee_raise, knee_press. "
+            "Return ONLY the JSON — no prose, no markdown fences."
+        )
+
+    if intent == "save_workout_plan":
+        if tool_result.get("saved"):
+            day = tool_result.get("plan", {}).get("weekday", "")
+            return f"Confirm to the user that their workout plan for {day} has been saved successfully."
+        return f"Inform the user there was a problem saving the plan: {tool_result.get('error', 'unknown error')}."
 
     if intent == "shutdown":
         return "Say a brief goodbye."
@@ -313,8 +390,8 @@ def _build_addendum(intent: str, tool_result: dict) -> str:
             "reset_reps":    "resetting the rep counter",
             "overlay_toggle": "toggling the overlay",
         }
-        label = cmd_labels.get(tool_result['frontend_command'],
-                               tool_result['frontend_command'].replace('_', ' '))
+        label = cmd_labels.get(tool_result["frontend_command"],
+                               tool_result["frontend_command"].replace("_", " "))
         return f"Acknowledge briefly that you are {label}. One sentence, conversational."
 
     return ""
@@ -355,14 +432,14 @@ def invoke_friday(username: str, message: str,
                   latest_frame: Optional[bytes] = None) -> dict:
     """
     Invoke the Friday agent for one turn.
-
     Returns {response: str, intent: str, tool_result: dict | None}
-    Falls back to Gemini chatbot if Azure keys are not configured.
+    Falls back to Gemini chatbot if no LLM is configured at all.
     """
-    if not _AZURE_ENDPOINT or not _AZURE_API_KEY:
-        # Graceful fallback to existing Gemini chatbot
+    try:
+        _get_llm()   # validate at least one LLM is ready
+    except ValueError:
         try:
-            from backend.agent.chatbot import _get_response as gemini_response
+            from backend.agent.chatbot import _get_response as gemini_response  # noqa: PLC0415
             reply = gemini_response(username, message)
         except Exception:
             reply = "AI assistant is not configured."
@@ -385,7 +462,6 @@ def invoke_friday(username: str, message: str,
 
     result = graph.invoke(state, config=config)
 
-    # Write assistant reply to MongoDB
     try:
         from backend.utils import db  # noqa: PLC0415
         if result.get("response"):

@@ -1065,15 +1065,45 @@ select:focus {
 /* Hide upload panel when [hidden] attribute is set */
 .upload-overlay[hidden] { display: none !important; }
 
-/* Override old .video-wrap inside upload panel */
-.upload-inner .video-wrap {
-  position: relative;
+/* ── Upload fullscreen analysis mode ───────────────────────────────── */
+
+/* Fullscreen result image — hidden by default, fills overlay when shown */
+.upload-result-fullscreen {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  aspect-ratio: 16/9;
-  border-radius: 12px;
-  background: hsl(230,22%,9%);
-  overflow: hidden;
+  height: 100%;
+  object-fit: contain;
+  display: none;
+  background: #000;
 }
-.upload-inner #upload-result-img {
-  width: 100%; height: 100%; object-fit: contain; display: block;
+
+/* When .is-processing: black background, hide drop-zone box, show result */
+#panel-upload.is-processing {
+  background: #000 !important;
+  backdrop-filter: none !important;
+}
+#panel-upload.is-processing #upload-drop-section { display: none; }
+#panel-upload.is-processing .upload-result-fullscreen { display: block; }
+#panel-upload.is-processing .upload-stream-status { display: flex !important; }
+
+/* Floating streaming status pill */
+.upload-stream-status {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  align-items: center;
+  background: rgba(10, 14, 26, 0.88);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 999px;
+  padding: 8px 16px;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  font-weight: 500;
+  z-index: 10;
+  white-space: nowrap;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
 }

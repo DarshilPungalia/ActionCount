@@ -42,10 +42,11 @@ const UploadModule = (() => {
     _abortCtrl = new AbortController();
     _stopHudPolling();
 
-    uploadVideoWrap.hidden    = true;
-    progressWrap.hidden       = false;
-    progressBar.style.width   = '5%';
-    progressLabel.textContent = 'Uploading…';
+    // Show progress inside the upload panel (still visible at this stage)
+    uploadResultImg.style.display = 'none';
+    progressWrap.hidden           = false;
+    progressBar.style.width       = '5%';
+    progressLabel.textContent     = 'Uploading…';
     setStatus('active', 'Processing video…');
     updateHUD({ counter: 0, feedback: 'Get in Position', progress: 0, correct_form: false });
 
@@ -62,7 +63,7 @@ const UploadModule = (() => {
     formData.append('session_id', _uploadSid);
 
     try {
-      // Animate fake upload progress (5 → 80%)
+      // Fake progress 5 → 80%
       let fakeProgress = 5;
       const ticker = setInterval(() => {
         fakeProgress = Math.min(fakeProgress + 2, 80);
@@ -76,29 +77,52 @@ const UploadModule = (() => {
       });
 
       clearInterval(ticker);
-
       if (!res.ok) throw new Error(await res.text());
 
-      progressBar.style.width   = '90%';
-      progressLabel.textContent = 'Streaming frames…';
-      uploadVideoWrap.hidden    = false;
+      // ── Switch to fullscreen view ─────────────────────────────────────────
+      // Hide the upload overlay → camera wrap (with HUD + controls) becomes visible
+      panelUpload.hidden            = true;
+      progressWrap.hidden           = true;
+      uploadResultImg.style.display = 'block';   // img is inside camera wrap
+      cameraPlaceholder.classList.add('hidden'); // hide camera placeholder
+      setStatus('active', 'Streaming analysis…');
 
       _startHudPolling(_uploadSid, _abortCtrl.signal);
       await _streamMjpeg(res.body, _abortCtrl.signal);
 
       _stopHudPolling();
-      progressBar.style.width   = '100%';
-      progressLabel.textContent = 'Done!';
-      setStatus('idle', 'Done');
+      // Analysis done — keep last frame + HUD visible so user can Save Set
+      setStatus('idle', 'Done — save your set below ↓');
 
     } catch (err) {
       _stopHudPolling();
-      if (err.name === 'AbortError') return;
+      if (err.name === 'AbortError') {
+        // User aborted — go back to upload panel
+        _exitUploadMode();
+        return;
+      }
       console.error('[Upload] error:', err);
       setStatus('error', `Error: ${err.message}`);
-      progressLabel.textContent = `Error: ${err.message}`;
+      _exitUploadMode();
     }
   }
+
+  /** Hide the MJPEG result and restore the upload panel. */
+  function _exitUploadMode() {
+    uploadResultImg.style.display = 'none';
+    cameraPlaceholder.classList.remove('hidden');
+    progressWrap.hidden = true;
+    panelUpload.hidden  = false;
+  }
+
+  /** Called by app.js switchTab when switching back to camera tab. */
+  window.uploadModuleReset = function () {
+    if (_abortCtrl) _abortCtrl.abort();
+    _stopHudPolling();
+    _exitUploadMode();
+  };
+
+
 
   /**
    * Consume a multipart/x-mixed-replace body and render each JPEG frame

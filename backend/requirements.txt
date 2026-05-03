@@ -39,11 +39,23 @@ ultralytics
 
 --extra-index-url https://download.pytorch.org/whl/cu130
 torch
+torchaudio
 
-# Friday AI Assistant
-httpx
-elevenlabs
-azure-cognitiveservices-speech
+# Friday AI Assistant — LLM
+langchain-anthropic
 langgraph
 langgraph-checkpoint-mongodb
-langchain-openai
+
+# Friday AI Assistant — STT (Whisper + Silero VAD)
+transformers
+accelerate
+datasets
+pyaudio
+soundfile
+
+# Friday AI Assistant — TTS (ElevenLabs streaming via httpx — no extra package needed)
+# Set ELEVENLABS_API_KEY in .env
+# Optional: ELEVENLABS_VOICE_ID (default: Sebastian = 1SaGpH4wLZDmppsPYVpx)
+
+# HTTP client
+httpx

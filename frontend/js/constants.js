@@ -64,7 +64,6 @@ const fileInput         = document.getElementById('file-input');
 const progressWrap      = document.getElementById('progress-wrap');
 const progressBar       = document.getElementById('progress-bar');
 const progressLabel     = document.getElementById('progress-label');
-const uploadVideoWrap   = document.getElementById('upload-video-wrap');
 const uploadResultImg   = document.getElementById('upload-result-img');
 
 // ── Shared mutable state ───────────────────────────────────────────────────────

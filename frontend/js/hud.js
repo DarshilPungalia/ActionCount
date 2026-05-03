@@ -32,7 +32,8 @@
         float r = texture2D(tDiffuse, vUv + vec2( uOffset, 0.0)).r;
         float g = texture2D(tDiffuse, vUv                      ).g;
         float b = texture2D(tDiffuse, vUv - vec2( uOffset, 0.0)).b;
-        gl_FragColor = vec4(r, g, b, 1.0);
+        float a = texture2D(tDiffuse, vUv).a;   // preserve scene alpha — DO NOT hardcode 1.0
+        gl_FragColor = vec4(r, g, b, a);
       }`,
   };
 
@@ -88,6 +89,12 @@
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.setClearColor(0x000000, 0);   // fully transparent — video shows through
 
+  /**
+   * IMPORTANT — depthWrite rule:
+   * ALL materials added to this scene MUST set depthWrite: false AND depthTest: false.
+   * Without this, Three.js geometry can occlude the transparent background (video feed),
+   * causing a black rectangle over the camera. Use HUD.safeMaterial(material) below.
+   */
   const scene = new THREE.Scene();
 
   let w = container.offsetWidth  || 640;
@@ -137,6 +144,20 @@
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  window.HUD = { scene, camera, renderer, composer, resize };
+  /**
+   * safeMaterial(material) — enforce depthWrite:false + depthTest:false.
+   * Call this on every material before adding a mesh to the HUD scene.
+   * Returns the same material (mutated in-place) for chaining.
+   *
+   * @param {THREE.Material} material
+   * @returns {THREE.Material}
+   */
+  function safeMaterial(material) {
+    material.depthWrite = false;
+    material.depthTest  = false;
+    return material;
+  }
+
+  window.HUD = { scene, camera, renderer, composer, resize, safeMaterial };
 
 })();

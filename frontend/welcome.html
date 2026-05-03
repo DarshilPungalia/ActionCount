@@ -223,11 +223,11 @@
 
   <!-- Greeting -->
   <div class="greeting-block animate-in delay-1">
-    <p class="greeting-sub">Hello, <span data-username>…</span></p>
-    <h1 class="greeting-main">
+    <p class="greeting-sub" id="greeting-sub">Hello, <span data-username>…</span></p>
+    <h1 class="greeting-main" id="greeting-main">
       Welcome back,&nbsp;<span data-username>…</span>
     </h1>
-    <p class="tagline">Real-time rep counting — powered by RTMPose.</p>
+    <p class="tagline" id="greeting-tagline">Real-time rep counting — powered by RTMPose.</p>
   </div>
 
   <!-- Divider -->
@@ -266,9 +266,9 @@
   </div>
 
   <!-- CTA buttons -->
-  <div class="cta-row animate-in delay-4">
-    <a href="/" class="btn btn-primary">🚀 Open Tracker</a>
-    <a href="/dashboard" class="btn btn-ghost">📊 Dashboard</a>
+  <div class="cta-row animate-in delay-4" id="cta-row">
+    <a href="/" class="btn btn-primary" id="cta-primary">🚀 Open Tracker</a>
+    <a href="/dashboard" class="btn btn-ghost" id="cta-secondary">📊 Dashboard</a>
   </div>
 
   <p class="footer animate-in delay-4">
@@ -286,13 +286,37 @@
       return;
     }
 
+    // Detect first-time user
+    const isNew = sessionStorage.getItem('ac_is_new_user') === '1';
+    sessionStorage.removeItem('ac_is_new_user');   // consume immediately
+
     try {
       const { username } = await apiFetch('/api/me');
+
       // Mark this session so the tracker doesn't redirect back here
       sessionStorage.setItem('seen_welcome', '1');
-      document.querySelectorAll('[data-username]').forEach(function (el) {
+
+      // Fill all [data-username] slots
+      document.querySelectorAll('[data-username]').forEach(el => {
         el.textContent = username;
       });
+
+      if (isNew) {
+        // ── First-time greeting ───────────────────────────────────────────
+        document.getElementById('greeting-sub').innerHTML =
+          `You did it, <span data-username>${username}</span>! 🎉`;
+        document.getElementById('greeting-main').innerHTML =
+          `You're all set,&nbsp;<span style="background:linear-gradient(135deg,var(--cyan),var(--indigo));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">${username}</span>!`;
+        document.getElementById('greeting-tagline').textContent =
+          'Your profile is saved. Time to crush your first workout. 💪';
+
+        // Replace CTA buttons
+        document.getElementById('cta-primary').href        = '/plans';
+        document.getElementById('cta-primary').textContent = '📅 Build My Plan';
+        document.getElementById('cta-secondary').href      = '/';
+        document.getElementById('cta-secondary').textContent = '🚀 Open Tracker';
+      }
+
     } catch (_) {
       window.location.href = '/login';
     }

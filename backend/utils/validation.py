@@ -37,8 +37,17 @@ class UserProfile(BaseModel):
     gender: str = Field(..., pattern="^(male|female|other)$")
     target: str = Field(
         ...,
-        description="fitness goal",
+        description="Primary fitness goal",
         pattern="^(weight_loss|muscle_gain|endurance|general_fitness)$",
+    )
+    goals_extra: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Free-text additional goal specifications from the user",
+    )
+    equipment_availability: list[str] = Field(
+        default_factory=list,
+        description="Available equipment, e.g. ['dumbbells', 'barbell', 'resistance_bands', 'pull_up_bar', 'none']",
     )
     dietary_restrictions: list[str] = Field(
         default_factory=list,
@@ -197,4 +206,43 @@ class FulfilledRequest(BaseModel):
     type: str          # "diet_plan" | "calorie_scan" | "reminder" | "custom"
     summary: str
     ref_id: Optional[str] = None
+
+
+# ── Workout Plans ─────────────────────────────────────────────────────────────
+
+class PlanExercise(BaseModel):
+    """A single exercise entry within a workout plan."""
+    exercise_key: str = Field(..., description="Slug key e.g. 'bicep_curl'")
+    sets: int         = Field(..., ge=1, le=20)
+    reps: int         = Field(..., ge=1, le=200)
+    weight_kg: float  = Field(default=0.0, ge=0, description="0 = bodyweight")
+
+
+class SaveWorkoutPlanRequest(BaseModel):
+    weekday: str     = Field(..., pattern="^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$")
+    exercises: list[PlanExercise] = Field(..., min_length=1)
+
+
+class WorkoutPlanResponse(BaseModel):
+    weekday: str
+    exercises: list[PlanExercise]
+    updated_at: str
+    is_active: bool
+
+
+class WeeklyScheduleResponse(BaseModel):
+    schedule: dict[str, Optional[list[PlanExercise]]]
+    # Keys: Mon–Sun; value is None when no plan set for that day
+
+
+class ReplacementSuggestion(BaseModel):
+    exercise_key: str
+    display_name: str
+    muscle_group: str
+
+
+class ReplacementResponse(BaseModel):
+    original_exercise: str
+    muscle_group: Optional[str]
+    suggestions: list[ReplacementSuggestion]
 

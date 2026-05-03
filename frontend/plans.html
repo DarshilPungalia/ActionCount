@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta name="description" content="ActionCount — Weekly Workout Plan Builder"/>
+  <title>Workout Plans — ActionCount</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
+  <link rel="stylesheet" href="/static/styles.css"/>
+  <style>
+    /* ── Plans page base ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #080b16;
+      color: #e2e8f0;
+      min-height: 100vh;
+    }
+
+    /* ── Nav (same as other pages) ── */
+    .plans-nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(8,11,22,0.85);
+      backdrop-filter: blur(20px) saturate(1.6);
+      border-bottom: 1px solid rgba(255,255,255,0.07);
+      padding: 0 2rem;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+    }
+    .nav-brand { display:flex; align-items:center; gap:.6rem; font-weight:700; font-size:1.1rem; text-decoration:none; color:#f1f5f9; }
+    .nav-links { display:flex; gap:.5rem; }
+    .nav-pill {
+      padding:.35rem .9rem; border-radius:999px; font-size:.82rem; font-weight:500;
+      color:#94a3b8; text-decoration:none; transition:background .2s, color .2s;
+    }
+    .nav-pill:hover, .nav-pill.active { background:rgba(99,102,241,.18); color:#a5b4fc; }
+    #nav-username { font-size:.82rem; color:#64748b; }
+    .nav-logout {
+      padding:.35rem .9rem; border-radius:999px; font-size:.82rem; font-weight:500;
+      background:rgba(239,68,68,.12); color:#f87171; border:none; cursor:pointer;
+      transition:background .2s;
+    }
+    .nav-logout:hover { background:rgba(239,68,68,.25); }
+
+    /* ── Page layout ── */
+    .plans-page { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+    .plans-header { margin-bottom: 2.5rem; }
+    .plans-header h1 { font-size: 1.8rem; font-weight: 800; background: linear-gradient(135deg, #a5b4fc, #34d399); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .plans-header p { color: #64748b; margin-top: .4rem; font-size: .9rem; }
+
+    /* ── Week grid ── */
+    .week-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: .75rem;
+      margin-bottom: 2.5rem;
+    }
+    @media(max-width:900px) { .week-grid { grid-template-columns: repeat(4,1fr); } }
+    @media(max-width:560px) { .week-grid { grid-template-columns: repeat(2,1fr); } }
+
+    .day-card {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 16px;
+      padding: 1rem .85rem;
+      cursor: pointer;
+      transition: border-color .2s, background .2s, transform .15s;
+      min-height: 80px;
+      display: flex; flex-direction: column; align-items: center; gap: .4rem;
+    }
+    .day-card:hover { background: rgba(99,102,241,.1); border-color: rgba(99,102,241,.4); transform: translateY(-2px); }
+    .day-card.active-day { border-color: #6366f1; background: rgba(99,102,241,.15); }
+    .day-card.today { border-color: rgba(52,211,153,.5); }
+    .day-card.has-plan::after { content: ''; display:block; width:6px; height:6px; border-radius:50%; background:#6366f1; margin-top:auto; }
+    .day-label { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #94a3b8; }
+    .day-ex-count { font-size: .78rem; color: #64748b; }
+    .day-card.today .day-label { color: #34d399; }
+
+    /* ── Detail panel ── */
+    .detail-panel {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 20px;
+      padding: 1.5rem;
+    }
+    .detail-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1.25rem;
+    }
+    .detail-title { font-size: 1.1rem; font-weight: 700; }
+    .detail-actions { display: flex; gap: .6rem; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .45rem 1rem; border-radius: 10px; font-size: .82rem;
+      font-weight: 600; border: none; cursor: pointer;
+      transition: background .2s, transform .12s, opacity .2s;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn-primary { background: #6366f1; color: #fff; }
+    .btn-primary:hover { background: #4f46e5; }
+    .btn-ghost { background: rgba(255,255,255,.07); color: #94a3b8; }
+    .btn-ghost:hover { background: rgba(255,255,255,.12); color: #e2e8f0; }
+    .btn-danger { background: rgba(239,68,68,.12); color: #f87171; }
+    .btn-danger:hover { background: rgba(239,68,68,.22); }
+    .btn-sm { padding: .3rem .7rem; font-size: .75rem; }
+    .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    /* ── Exercise list (sortable) ── */
+    .exercise-list { display: flex; flex-direction: column; gap: .6rem; }
+    .exercise-item {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 12px;
+      padding: .75rem 1rem;
+      display: flex; align-items: center; gap: .75rem;
+      transition: background .15s, box-shadow .15s;
+    }
+    .exercise-item:hover { background: rgba(255,255,255,.07); }
+    .exercise-item.sortable-ghost { opacity: .35; }
+    .exercise-item.sortable-chosen { box-shadow: 0 0 0 2px #6366f1; }
+    .drag-handle {
+      cursor: grab; color: #374151; font-size: 1.1rem;
+      padding: .2rem; flex-shrink: 0; user-select: none;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .ex-info { flex: 1; min-width: 0; }
+    .ex-name { font-size: .88rem; font-weight: 600; }
+    .ex-meta { font-size: .75rem; color: #64748b; margin-top: .15rem; }
+    .ex-actions { display: flex; gap: .4rem; flex-shrink: 0; }
+
+    /* ── Add exercise form ── */
+    .add-form {
+      margin-top: 1.25rem;
+      background: rgba(255,255,255,.03);
+      border: 1px dashed rgba(255,255,255,.1);
+      border-radius: 14px;
+      padding: 1.1rem;
+      display: none;
+    }
+    .add-form.visible { display: block; }
+    .form-row { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: .6rem; align-items: end; }
+    @media(max-width:640px) { .form-row { grid-template-columns: 1fr 1fr; } }
+    .form-group label { display:block; font-size:.72rem; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:.07em; margin-bottom:.3rem; }
+    .form-control {
+      width:100%; padding:.5rem .75rem; border-radius:8px; font-size:.84rem;
+      background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.1);
+      color:#e2e8f0; font-family:inherit; outline:none;
+      transition:border-color .2s;
+    }
+    .form-control:focus { border-color:#6366f1; }
+    select.form-control option { background:#0f172a; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center; padding: 2.5rem 1rem; color: #374151;
+    }
+    .empty-state svg { width:48px; height:48px; margin:0 auto 1rem; opacity:.35; }
+    .empty-state p { font-size:.9rem; }
+
+    /* ── Replace modal ── */
+    .modal-backdrop {
+      position:fixed; inset:0; background:rgba(0,0,0,.6);
+      backdrop-filter:blur(6px); z-index:200;
+      display:none; align-items:center; justify-content:center;
+    }
+    .modal-backdrop.open { display:flex; }
+    .modal {
+      background:#0f172a; border:1px solid rgba(255,255,255,.12);
+      border-radius:20px; padding:1.5rem; width:min(420px,90vw);
+      animation: modal-in .2s ease;
+    }
+    @keyframes modal-in { from { transform:translateY(20px); opacity:0; } to { transform:translateY(0); opacity:1; } }
+    .modal-title { font-size:1rem; font-weight:700; margin-bottom:1rem; }
+    .suggestion-list { display:flex; flex-direction:column; gap:.5rem; }
+    .suggestion-item {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:.7rem 1rem; border-radius:10px;
+      background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07);
+      cursor:pointer; transition:background .15s, border-color .15s;
+    }
+    .suggestion-item:hover { background:rgba(99,102,241,.12); border-color:rgba(99,102,241,.35); }
+    .suggestion-name { font-size:.86rem; font-weight:600; }
+    .suggestion-muscle { font-size:.72rem; color:#6366f1; font-weight:600; text-transform:uppercase; letter-spacing:.07em; }
+
+    /* ── Toast ── */
+    #plans-toast {
+      position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(60px);
+      background:rgba(10,14,26,.92); border:1px solid rgba(255,255,255,.1);
+      border-radius:14px; padding:1rem 1.25rem; min-width:280px; max-width:420px;
+      z-index:300; opacity:0; transition:opacity .3s, transform .3s;
+      display:flex; align-items:center; gap:.75rem;
+    }
+    #plans-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+    .toast-icon { font-size:1.2rem; }
+    .toast-msg { font-size:.84rem; flex:1; }
+
+    /* ── Chatbot save banner ── */
+    #chatbot-plan-banner {
+      position:fixed; bottom:24px; right:24px; z-index:250;
+      background:rgba(10,14,26,.95); border:1px solid rgba(99,102,241,.35);
+      border-radius:16px; padding:1.1rem 1.25rem; width:320px;
+      box-shadow:0 8px 32px rgba(99,102,241,.2);
+      transform:translateY(120px); opacity:0;
+      transition:transform .35s cubic-bezier(.34,1.56,.64,1), opacity .3s;
+    }
+    #chatbot-plan-banner.open { transform:translateY(0); opacity:1; }
+    .banner-title { font-size:.8rem; font-weight:700; color:#a5b4fc; text-transform:uppercase; letter-spacing:.08em; margin-bottom:.4rem; }
+    .banner-body { font-size:.84rem; color:#cbd5e1; margin-bottom:.85rem; }
+    .banner-actions { display:flex; gap:.5rem; }
+
+    /* ── Auto-start banner ── */
+    #autostart-banner {
+      position:fixed; top:80px; left:50%; transform:translateX(-50%) translateY(-20px);
+      z-index:200; background:rgba(8,11,22,.92);
+      border:1px solid rgba(52,211,153,.35); border-radius:999px;
+      padding:.6rem 1.4rem; display:flex; align-items:center; gap:.75rem;
+      box-shadow:0 4px 24px rgba(52,211,153,.15); opacity:0;
+      transition:opacity .3s, transform .3s; pointer-events:none;
+    }
+    #autostart-banner.show { opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto; }
+    .autostart-text { font-size:.84rem; color:#e2e8f0; }
+    .autostart-day { font-weight:700; color:#34d399; }
+  </style>
+</head>
+
+<body>
+
+  <!-- Nav -->
+  <nav class="plans-nav">
+    <a href="/" class="nav-brand">🏋️ ActionCount</a>
+    <div class="nav-links">
+      <a href="/"          class="nav-pill">Tracker</a>
+      <a href="/dashboard" class="nav-pill">Dashboard</a>
+      <a href="/chatbot"   class="nav-pill">AI Coach</a>
+      <a href="/plans"     class="nav-pill active">Plans</a>
+      <a href="/metrics"   class="nav-pill">Metrics</a>
+    </div>
+    <div style="display:flex;align-items:center;gap:.75rem;">
+      <span id="nav-username" style="font-size:.82rem;color:#64748b;"></span>
+      <button onclick="Auth.logout()" class="nav-logout">Logout</button>
+    </div>
+  </nav>
+
+  <!-- Auto-start banner -->
+  <div id="autostart-banner">
+    <span>🏃</span>
+    <span class="autostart-text">Today is <span class="autostart-day" id="autostart-day"></span> — you have a workout ready!</span>
+    <a href="/" class="btn btn-primary btn-sm" id="autostart-go">Start Workout</a>
+    <button class="btn btn-ghost btn-sm" onclick="document.getElementById('autostart-banner').classList.remove('show')">✕</button>
+  </div>
+
+  <!-- Replace modal -->
+  <div class="modal-backdrop" id="replace-modal">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;">
+        <span class="modal-title" id="modal-title">Replace Exercise</span>
+        <button class="btn btn-ghost btn-sm" onclick="closeReplaceModal()">✕</button>
+      </div>
+      <p style="font-size:.8rem;color:#64748b;margin-bottom:.85rem;">
+        Same muscle group alternatives for <strong id="modal-original"></strong>:
+      </p>
+      <div class="suggestion-list" id="suggestion-list">
+        <p style="color:#374151;font-size:.84rem;">Loading…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chatbot plan save banner -->
+  <div id="chatbot-plan-banner">
+    <div class="banner-title">💬 AI Generated Plan</div>
+    <div class="banner-body" id="banner-body">Friday suggested a new workout plan. Save it to your schedule?</div>
+    <div class="banner-actions">
+      <button class="btn btn-primary btn-sm" id="banner-save-btn">Save to Plans</button>
+      <button class="btn btn-ghost btn-sm" onclick="dismissBanner()">Dismiss</button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="plans-toast">
+    <span class="toast-icon" id="toast-icon">✅</span>
+    <span class="toast-msg" id="toast-msg"></span>
+  </div>
+
+  <!-- ── Main content ── -->
+  <main class="plans-page">
+
+    <div class="plans-header">
+      <h1>Weekly Workout Plan</h1>
+      <p>Drag to reorder exercises. Plans repeat weekly until you change them.</p>
+    </div>
+
+    <!-- Week day selector -->
+    <div class="week-grid" id="week-grid">
+      <!-- Filled by JS -->
+    </div>
+
+    <!-- Day detail panel -->
+    <div class="detail-panel" id="detail-panel">
+
+      <div class="detail-header">
+        <span class="detail-title" id="detail-day-label">Select a day</span>
+        <div class="detail-actions">
+          <button class="btn btn-ghost btn-sm" id="btn-add-exercise" onclick="toggleAddForm()">＋ Add Exercise</button>
+          <button class="btn btn-danger btn-sm" id="btn-clear-day" onclick="clearDay()" style="display:none">🗑 Clear Day</button>
+          <button class="btn btn-primary btn-sm" id="btn-save-plan" onclick="savePlan()" style="display:none">💾 Save Plan</button>
+        </div>
+      </div>
+
+      <!-- Sortable exercise list -->
+      <div class="exercise-list" id="exercise-list">
+        <div class="empty-state" id="empty-state">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5">
+            <rect x="8" y="16" width="32" height="24" rx="3"/>
+            <path d="M16 16V12a8 8 0 1116 0v4"/>
+            <circle cx="24" cy="28" r="3"/>
+          </svg>
+          <p>No exercises for this day.<br>Click <strong>＋ Add Exercise</strong> to build your plan.</p>
+        </div>
+      </div>
+
+      <!-- Add exercise form -->
+      <div class="add-form" id="add-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="new-exercise">Exercise</label>
+            <select id="new-exercise" class="form-control">
+              <option value="squat">🦵 Squat</option>
+              <option value="pushup">💪 Push-Up</option>
+              <option value="bicep_curl">🏋️ Bicep Curl</option>
+              <option value="pullup">🤸 Pull-Up</option>
+              <option value="lateral_raise">↔️ Lateral Raise</option>
+              <option value="overhead_press">⬆️ Overhead Press</option>
+              <option value="situp">🧘 Sit-Up</option>
+              <option value="crunch">⚡ Crunch</option>
+              <option value="leg_raise">🦶 Leg Raise</option>
+              <option value="knee_raise">🦵 Knee Raise</option>
+              <option value="knee_press">🔽 Knee Press</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="new-sets">Sets</label>
+            <input id="new-sets" type="number" min="1" max="20" value="3" class="form-control"/>
+          </div>
+          <div class="form-group">
+            <label for="new-reps">Reps</label>
+            <input id="new-reps" type="number" min="1" max="200" value="12" class="form-control"/>
+          </div>
+          <div class="form-group">
+            <label for="new-weight">Weight (kg)</label>
+            <input id="new-weight" type="number" min="0" step="0.5" value="0" class="form-control"/>
+          </div>
+        </div>
+        <div style="display:flex;gap:.6rem;margin-top:.85rem;">
+          <button class="btn btn-primary btn-sm" onclick="addExercise()">Add</button>
+          <button class="btn btn-ghost btn-sm" onclick="toggleAddForm()">Cancel</button>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <script src="/static/js/api.js"></script>
+  <script>
+    // Auth guard
+    (async function() {
+      if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+      try {
+        await apiFetch('/api/user/profile');
+        document.getElementById('nav-username').textContent = Auth.username();
+      } catch (_) { window.location.href = '/login'; }
+    })();
+  </script>
+
+  <script>
+  'use strict';
+
+  // ── Constants ──────────────────────────────────────────────────────────────
+  const DAYS = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const TODAY_IDX = (new Date().getDay() + 6) % 7; // 0=Mon
+  const DISPLAY_NAMES = {
+    squat:'Squat', pushup:'Push-Up', bicep_curl:'Bicep Curl',
+    pullup:'Pull-Up', lateral_raise:'Lateral Raise', overhead_press:'Overhead Press',
+    situp:'Sit-Up', crunch:'Crunch', leg_raise:'Leg Raise',
+    knee_raise:'Knee Raise', knee_press:'Knee Press',
+  };
+  const EMOJIS = {
+    squat:'🦵', pushup:'💪', bicep_curl:'🏋️', pullup:'🤸',
+    lateral_raise:'↔️', overhead_press:'⬆️', situp:'🧘',
+    crunch:'⚡', leg_raise:'🦶', knee_raise:'🦵', knee_press:'🔽',
+  };
+
+  // ── State ──────────────────────────────────────────────────────────────────
+  let _schedule  = {};   // {Mon: {exercises:[...]}, ...}
+  let _activeDay = DAYS[TODAY_IDX];
+  let _dirty     = false;
+  let _sortable  = null;
+  let _replaceTarget = null;  // {dayKey, exIndex}
+  let _pendingPlan   = null;  // chatbot-generated plan JSON
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+  window.addEventListener('load', async () => {
+    buildWeekGrid();
+    await loadWeekSchedule();
+    selectDay(_activeDay);
+    checkAutostartBanner();
+    listenForChatbotPlan();
+  });
+
+  // ── Load full week ─────────────────────────────────────────────────────────
+  async function loadWeekSchedule() {
+    try {
+      const data = await apiFetch('/api/plans/week');
+      DAYS.forEach(d => {
+        _schedule[d] = data[d]?.exercises || null;
+      });
+      refreshWeekGrid();
+    } catch (e) { showToast('⚠️', 'Could not load plans: ' + e.message); }
+  }
+
+  // ── Week grid ──────────────────────────────────────────────────────────────
+  function buildWeekGrid() {
+    const grid = document.getElementById('week-grid');
+    grid.innerHTML = '';
+    DAYS.forEach((day, i) => {
+      const card = document.createElement('div');
+      card.className = 'day-card' + (i === TODAY_IDX ? ' today' : '');
+      card.id = `day-card-${day}`;
+      card.setAttribute('role','button');
+      card.setAttribute('tabindex','0');
+      card.setAttribute('aria-label', `${day} workout plan`);
+      card.innerHTML = `
+        <span class="day-label">${day}</span>
+        <span class="day-ex-count" id="day-count-${day}">—</span>`;
+      card.addEventListener('click', () => selectDay(day));
+      card.addEventListener('keydown', e => { if(e.key==='Enter'||e.key===' ') selectDay(day); });
+      grid.appendChild(card);
+    });
+  }
+
+  function refreshWeekGrid() {
+    DAYS.forEach(day => {
+      const exs = _schedule[day];
+      const card = document.getElementById(`day-card-${day}`);
+      const countEl = document.getElementById(`day-count-${day}`);
+      if (!card) return;
+      card.classList.toggle('has-plan', !!(exs && exs.length));
+      countEl.textContent = exs && exs.length ? `${exs.length} exercise${exs.length>1?'s':''}` : 'Rest day';
+    });
+  }
+
+  function selectDay(day) {
+    if (_dirty && !confirm('You have unsaved changes. Discard them?')) return;
+    _dirty = false;
+    _activeDay = day;
+    document.querySelectorAll('.day-card').forEach(c => c.classList.remove('active-day'));
+    document.getElementById(`day-card-${day}`)?.classList.add('active-day');
+    document.getElementById('detail-day-label').textContent = day + ' — Workout Plan';
+    document.getElementById('add-form').classList.remove('visible');
+    renderExerciseList();
+    updateDetailButtons();
+  }
+
+  // ── Exercise list renderer ─────────────────────────────────────────────────
+  function renderExerciseList() {
+    const list = document.getElementById('exercise-list');
+    const empty = document.getElementById('empty-state');
+    const exs   = _schedule[_activeDay] || [];
+
+    // Remove old sortable
+    if (_sortable) { _sortable.destroy(); _sortable = null; }
+
+    // Remove all exercise items (keep empty state)
+    list.querySelectorAll('.exercise-item').forEach(el => el.remove());
+
+    if (!exs.length) {
+      empty.style.display = 'block';
+      return;
+    }
+    empty.style.display = 'none';
+
+    exs.forEach((ex, idx) => {
+      const item = document.createElement('div');
+      item.className = 'exercise-item';
+      item.dataset.idx = idx;
+      const name = DISPLAY_NAMES[ex.exercise_key] || ex.exercise_key;
+      const emoji = EMOJIS[ex.exercise_key] || '🏋️';
+      const wt = ex.weight_kg > 0 ? `${ex.weight_kg} kg` : 'Bodyweight';
+      item.innerHTML = `
+        <span class="drag-handle" title="Drag to reorder">⠿</span>
+        <div class="ex-info">
+          <div class="ex-name">${emoji} ${name}</div>
+          <div class="ex-meta">${ex.sets} sets × ${ex.reps} reps · ${wt}</div>
+        </div>
+        <div class="ex-actions">
+          <button class="btn btn-ghost btn-sm" title="Replace exercise"
+            onclick="openReplaceModal('${ex.exercise_key}', ${idx})">🔄 Replace</button>
+          <button class="btn btn-danger btn-sm" title="Remove"
+            onclick="removeExercise(${idx})">✕</button>
+        </div>`;
+      list.insertBefore(item, empty);
+    });
+
+    // Init SortableJS
+    _sortable = Sortable.create(list, {
+      animation: 150,
+      handle: '.drag-handle',
+      ghostClass: 'sortable-ghost',
+      chosenClass: 'sortable-chosen',
+      filter: '.empty-state',
+      onEnd(evt) {
+        const exs = _schedule[_activeDay];
+        const [moved] = exs.splice(evt.oldIndex, 1);
+        exs.splice(evt.newIndex, 0, moved);
+        _dirty = true;
+        updateDetailButtons();
+        renderExerciseList();
+      }
+    });
+  }
+
+  // ── Add exercise ───────────────────────────────────────────────────────────
+  function toggleAddForm() {
+    document.getElementById('add-form').classList.toggle('visible');
+  }
+
+  function addExercise() {
+    const key    = document.getElementById('new-exercise').value;
+    const sets   = parseInt(document.getElementById('new-sets').value) || 3;
+    const reps   = parseInt(document.getElementById('new-reps').value) || 12;
+    const weight = parseFloat(document.getElementById('new-weight').value) || 0;
+    if (!_schedule[_activeDay]) _schedule[_activeDay] = [];
+    _schedule[_activeDay].push({ exercise_key: key, sets, reps, weight_kg: weight });
+    _dirty = true;
+    document.getElementById('add-form').classList.remove('visible');
+    renderExerciseList();
+    refreshWeekGrid();
+    updateDetailButtons();
+  }
+
+  function removeExercise(idx) {
+    _schedule[_activeDay]?.splice(idx, 1);
+    _dirty = true;
+    renderExerciseList();
+    refreshWeekGrid();
+    updateDetailButtons();
+  }
+
+  // ── Save / clear ───────────────────────────────────────────────────────────
+  async function savePlan() {
+    const exs = _schedule[_activeDay];
+    if (!exs || !exs.length) { clearDay(); return; }
+    try {
+      await apiFetch('/api/plans/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weekday: _activeDay, exercises: exs }),
+      });
+      _dirty = false;
+      updateDetailButtons();
+      showToast('✅', `${_activeDay} plan saved!`);
+      refreshWeekGrid();
+    } catch (e) { showToast('❌', 'Save failed: ' + e.message); }
+  }
+
+  async function clearDay() {
+    if (!confirm(`Clear the entire ${_activeDay} plan?`)) return;
+    try {
+      await apiFetch(`/api/plans/${_activeDay}`, { method: 'DELETE' });
+    } catch (_) { /* ignore 404 if no plan existed */ }
+    _schedule[_activeDay] = null;
+    _dirty = false;
+    renderExerciseList();
+    refreshWeekGrid();
+    updateDetailButtons();
+    showToast('🗑️', `${_activeDay} plan cleared.`);
+  }
+
+  function updateDetailButtons() {
+    const exs   = _schedule[_activeDay];
+    const hasPlan = !!(exs && exs.length);
+    document.getElementById('btn-clear-day').style.display = hasPlan ? '' : 'none';
+    document.getElementById('btn-save-plan').style.display = (_dirty || hasPlan) ? '' : 'none';
+    document.getElementById('btn-save-plan').textContent = _dirty ? '💾 Save Changes' : '💾 Save Plan';
+  }
+
+  // ── Replace modal ──────────────────────────────────────────────────────────
+  async function openReplaceModal(exerciseKey, idx) {
+    _replaceTarget = { day: _activeDay, idx };
+    document.getElementById('modal-original').textContent = DISPLAY_NAMES[exerciseKey] || exerciseKey;
+    document.getElementById('suggestion-list').innerHTML = '<p style="color:#64748b;font-size:.84rem;">Loading suggestions…</p>';
+    document.getElementById('replace-modal').classList.add('open');
+    document.body.style.overflow = 'hidden';
+    try {
+      const data = await apiFetch(`/api/plans/suggest?exercise=${exerciseKey}&limit=4`);
+      const list = document.getElementById('suggestion-list');
+      if (!data.suggestions?.length) {
+        list.innerHTML = '<p style="color:#64748b;font-size:.84rem;">No alternatives found for this muscle group.</p>';
+        return;
+      }
+      list.innerHTML = '';
+      data.suggestions.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'suggestion-item';
+        item.innerHTML = `
+          <div>
+            <div class="suggestion-name">${EMOJIS[s.exercise_key]||'🏋️'} ${s.display_name}</div>
+            <div class="suggestion-muscle">${s.muscle_group}</div>
+          </div>
+          <button class="btn btn-primary btn-sm">Select</button>`;
+        item.addEventListener('click', () => applyReplacement(s.exercise_key));
+        list.appendChild(item);
+      });
+    } catch (e) {
+      document.getElementById('suggestion-list').innerHTML = `<p style="color:#f87171;font-size:.84rem;">Error: ${e.message}</p>`;
+    }
+  }
+
+  function applyReplacement(newKey) {
+    if (!_replaceTarget) return;
+    const exs = _schedule[_replaceTarget.day];
+    if (exs && exs[_replaceTarget.idx]) {
+      exs[_replaceTarget.idx].exercise_key = newKey;
+      _dirty = true;
+      renderExerciseList();
+      updateDetailButtons();
+    }
+    closeReplaceModal();
+    showToast('🔄', `Replaced with ${DISPLAY_NAMES[newKey] || newKey}`);
+  }
+
+  function closeReplaceModal() {
+    document.getElementById('replace-modal').classList.remove('open');
+    document.body.style.overflow = '';
+    _replaceTarget = null;
+  }
+  document.getElementById('replace-modal').addEventListener('click', e => {
+    if (e.target === e.currentTarget) closeReplaceModal();
+  });
+
+  // ── Auto-start banner ──────────────────────────────────────────────────────
+  async function checkAutostartBanner() {
+    try {
+      const today = DAYS[TODAY_IDX];
+      const data  = await apiFetch(`/api/plans/today?day=${today}`);
+      if (data.has_plan && data.exercises?.length) {
+        document.getElementById('autostart-day').textContent = today;
+        document.getElementById('autostart-banner').classList.add('show');
+      }
+    } catch (_) {}
+  }
+
+  // ── Chatbot plan listener ──────────────────────────────────────────────────
+  // Listens for a custom event fired by the Friday WebSocket when a
+  // generate_workout_plan intent returns JSON. Also exposed globally for chatbot.html.
+  function listenForChatbotPlan() {
+    window.addEventListener('friday_plan_suggestion', e => {
+      _pendingPlan = e.detail;
+      const days = Object.keys(_pendingPlan).filter(d => _pendingPlan[d]?.length);
+      document.getElementById('banner-body').textContent =
+        `Friday generated a plan for ${days.join(', ')}. Save it to your schedule?`;
+      document.getElementById('chatbot-plan-banner').classList.add('open');
+      document.getElementById('banner-save-btn').onclick = savePendingPlan;
+    });
+  }
+
+  async function savePendingPlan() {
+    if (!_pendingPlan) return;
+    const entries = Object.entries(_pendingPlan);
+    let saved = 0;
+    for (const [day, exs] of entries) {
+      if (!DAYS.includes(day) || !exs?.length) continue;
+      try {
+        await apiFetch('/api/plans/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ weekday: day, exercises: exs }),
+        });
+        _schedule[day] = exs;
+        saved++;
+      } catch (_) {}
+    }
+    dismissBanner();
+    await loadWeekSchedule();
+    selectDay(_activeDay);
+    showToast('✅', `Saved ${saved} day${saved>1?'s':''} from AI plan!`);
+  }
+
+  function dismissBanner() {
+    document.getElementById('chatbot-plan-banner').classList.remove('open');
+    _pendingPlan = null;
+  }
+
+  // ── Toast helper ───────────────────────────────────────────────────────────
+  let _toastTimer = null;
+  function showToast(icon, msg) {
+    const el = document.getElementById('plans-toast');
+    document.getElementById('toast-icon').textContent = icon;
+    document.getElementById('toast-msg').textContent  = msg;
+    el.classList.add('show');
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+  }
+
+  </script>
+</body>
+</html>

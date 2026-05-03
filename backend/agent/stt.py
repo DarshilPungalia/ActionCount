@@ -1,88 +1,61 @@
 """
 friday_stt.py
 -------------
-Azure Cognitive Services Speech SDK — continuous recognition daemon thread.
+Speech-to-Text daemon for the Friday AI assistant.
 
-IMPORTANT — How audio capture works:
-  The Azure Speech SDK captures audio from the SERVER'S default microphone,
-  NOT the browser. No browser mic permission is ever requested.
-  The daemon runs as a background thread on the machine running endpoint.py.
+Stack:
+  - PyAudio         : server microphone capture
+  - Silero VAD      : voice activity detection (speech onset / offset)
+  - Whisper large-v3-turbo (via HuggingFace transformers) : transcription
 
-Config priority (set in .env):
-  1. AZURE_STT_REGION   — e.g. "eastus"  (PREFERRED — most reliable)
-     + AZURE_STT_KEY
-  2. AZURE_STT_ENDPOINT — custom endpoint, e.g. https://NAME.cognitiveservices.azure.com
-     + AZURE_STT_KEY
-
-  NOTE: .services.ai.azure.com (AI Foundry REST) does NOT work with the
-  Speech SDK WebSocket protocol. Use a region or .cognitiveservices.azure.com.
+Flow:
+  1. PyAudio loop reads raw PCM in small chunks (512 samples @ 16 kHz)
+  2. Silero VAD scores each chunk → detects speech start / end
+  3. On speech START  → fire on_speech_start() + WebSocket listening indicator
+  4. On speech START while TTS active → call tts.stop_speaking() (barge-in)
+  5. On speech END    → fire on_speech_end(), pass buffered audio to Whisper
+  6. Whisper returns transcript → fire callback(transcript)
 
 Callbacks supplied to start():
   callback(transcript: str)   — final recognised phrase
-  on_speech_start()           — Azure VAD detected speech onset
-  on_speech_end()             — Azure VAD detected end of utterance
+  on_speech_start()           — VAD detected speech onset
+  on_speech_end()             — VAD detected end of utterance
+
+Config (.env):
+  No Azure keys needed. Model is downloaded automatically by HuggingFace cache.
 """
 
 from __future__ import annotations
 
-import os
 import threading
+import time
 from typing import Callable, Optional
-
-from dotenv import load_dotenv
-
-load_dotenv()
-
-_SPEECH_KEY    = os.getenv("AZURE_STT_KEY", "")
-_STT_REGION    = os.getenv("AZURE_STT_REGION", "")          # e.g. "eastus"
-_STT_ENDPOINT  = os.getenv("AZURE_STT_ENDPOINT", "").rstrip("/")
 
 _TAG = "[FridaySTT]"
 
-
-def _build_speech_config(speechsdk):
-    """
-    Build SpeechConfig using the best available credentials.
-
-    Priority:
-      1. Region  — speechsdk.SpeechConfig(subscription=key, region=region)
-      2. Endpoint — speechsdk.SpeechConfig(subscription=key, endpoint=url)
-         NOTE: endpoint must be .cognitiveservices.azure.com, not .services.ai.azure.com
-    """
-    if _STT_REGION:
-        print(f"{_TAG} Config  : region={_STT_REGION!r} (recommended)")
-        cfg = speechsdk.SpeechConfig(subscription=_SPEECH_KEY, region=_STT_REGION)
-    elif _STT_ENDPOINT:
-        # Warn if endpoint looks like the AI Foundry REST domain which won't work
-        if "services.ai.azure.com" in _STT_ENDPOINT:
-            print(
-                f"{_TAG} ⚠  WARNING: AZURE_STT_ENDPOINT looks like an AI Foundry REST "
-                f"URL ({_STT_ENDPOINT!r}). The Speech SDK needs a region or a "
-                f".cognitiveservices.azure.com endpoint. Set AZURE_STT_REGION instead."
-            )
-        print(f"{_TAG} Config  : endpoint={_STT_ENDPOINT!r}")
-        cfg = speechsdk.SpeechConfig(subscription=_SPEECH_KEY, endpoint=_STT_ENDPOINT)
-    else:
-        raise RuntimeError(
-            "Neither AZURE_STT_REGION nor AZURE_STT_ENDPOINT is set. "
-            "Add AZURE_STT_REGION=<your-region> (e.g. eastus) to your .env file."
-        )
-
-    cfg.speech_recognition_language = "en-US"
-    return cfg
+# ── Audio constants ───────────────────────────────────────────────────────────
+SAMPLE_RATE    = 16_000          # Silero VAD and Whisper both require 16 kHz
+CHUNK_SAMPLES  = 512             # ~32 ms per chunk at 16 kHz (Silero recommendation)
+SILENCE_CHUNKS = 25              # ~800 ms of silence after speech ends → finalize
+MIN_SPEECH_CHUNKS = 5            # ignore bursts shorter than ~160 ms (noise gate)
 
 
 class FridaySTT:
-    """Singleton Azure Speech continuous-recognition daemon."""
+    """Singleton Whisper + Silero VAD continuous-recognition daemon."""
 
     _instance: Optional["FridaySTT"] = None
 
     def __init__(self):
-        self._stop_event   = threading.Event()
+        self._stop_event         = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._callback: Optional[Callable[[str], None]] = None
         self._on_speech_start: Optional[Callable[[], None]] = None
         self._on_speech_end:   Optional[Callable[[], None]] = None
+
+        # Lazy-loaded models
+        self._vad_model  = None
+        self._vad_utils  = None
+        self._whisper_pipe = None
 
     @classmethod
     def instance(cls) -> "FridaySTT":
@@ -99,15 +72,8 @@ class FridaySTT:
         on_speech_end:   Optional[Callable[[], None]] = None,
     ) -> None:
         """Start the STT daemon thread. No-op if already running."""
-        if not _SPEECH_KEY:
-            print(f"{_TAG} AZURE_STT_KEY not set — STT disabled. Voice commands will NOT work.")
-            return
-        if not (_STT_REGION or _STT_ENDPOINT):
-            print(f"{_TAG} Neither AZURE_STT_REGION nor AZURE_STT_ENDPOINT set — STT disabled.")
-            print(f"{_TAG} Add AZURE_STT_REGION=eastus (or your region) to .env")
-            return
         if self._thread and self._thread.is_alive():
-            print(f"{_TAG} Daemon already running — ignoring duplicate start()")
+            print(f"{_TAG} Daemon already running — ignoring duplicate start().")
             return
 
         self._callback        = callback
@@ -119,14 +85,62 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Mic     : SERVER default audio device (no browser permission needed)")
-        print(f"{_TAG} VAD     : Azure built-in — agent responds after ~500 ms silence")
+        print(f"{_TAG} Models : Silero VAD + openai/whisper-large-v3-turbo")
+        print(f"{_TAG} Mic    : SERVER default audio device (PyAudio)")
 
     def stop(self) -> None:
         print(f"{_TAG} Stop requested.")
         self._stop_event.set()
 
-    # ── Internal ──────────────────────────────────────────────────────────────
+    # ── Model loading ─────────────────────────────────────────────────────────
+
+    def _load_vad(self):
+        if self._vad_model is not None:
+            return
+        print(f"{_TAG} Loading Silero VAD …")
+        import torch  # noqa: PLC0415
+        torch.set_num_threads(1)
+        self._vad_model, self._vad_utils = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+        )
+        print(f"{_TAG} ✅ Silero VAD loaded.")
+
+    def _load_whisper(self):
+        if self._whisper_pipe is not None:
+            return
+        print(f"{_TAG} Loading openai/whisper-large-v3-turbo …")
+        import torch  # noqa: PLC0415
+        from transformers import (  # noqa: PLC0415
+            AutoModelForSpeechSeq2Seq,
+            AutoProcessor,
+            pipeline,
+        )
+        device     = "cuda:0" if torch.cuda.is_available() else "cpu"
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        model_id   = "openai/whisper-large-v3-turbo"
+
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            use_safetensors=True,
+        )
+        model.to(device)
+        processor = AutoProcessor.from_pretrained(model_id)
+
+        self._whisper_pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+        print(f"{_TAG} ✅ Whisper loaded on {device}.")
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
 
     def _run(self) -> None:
         attempt = 0
@@ -134,123 +148,129 @@ class FridaySTT:
             attempt += 1
             print(f"{_TAG} Recognition loop attempt #{attempt}")
             try:
+                self._load_vad()
+                self._load_whisper()
                 self._recognition_loop()
-                # Only reset if we were deliberately stopped
                 if self._stop_event.is_set():
                     break
             except Exception as exc:
                 print(f"{_TAG} ❌ Error in recognition loop: {exc}")
-                wait = min(5.0, 2.0 + attempt * 0.5)   # gentle backoff, cap at 5s
+                wait = min(5.0, 2.0 + attempt * 0.5)
                 print(f"{_TAG} Retrying in {wait:.1f}s …")
                 self._stop_event.wait(timeout=wait)
         print(f"{_TAG} Daemon exited cleanly.")
 
     def _recognition_loop(self) -> None:
-        import azure.cognitiveservices.speech as speechsdk
+        import numpy as np  # noqa: PLC0415
+        import pyaudio      # noqa: PLC0415
 
-        cfg = _build_speech_config(speechsdk)
+        (get_speech_timestamps, _, _, _, _) = self._vad_utils
 
-        # Explicit default-mic AudioConfig avoids silent failures on some Windows configs
-        audio_cfg = speechsdk.audio.AudioConfig(use_default_microphone=True)
-        recognizer = speechsdk.SpeechRecognizer(speech_config=cfg, audio_config=audio_cfg)
+        pa     = pyaudio.PyAudio()
+        stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=SAMPLE_RATE,
+            input=True,
+            frames_per_buffer=CHUNK_SAMPLES,
+        )
 
-        done = threading.Event()
+        print(f"{_TAG} ✅ Mic stream open — listening …")
 
-        # ── Event handlers ────────────────────────────────────────────────────
+        speech_buffer:  list[np.ndarray] = []
+        silence_count:  int = 0
+        is_speaking:    bool = False
+        speech_chunk_count: int = 0
 
-        def _on_session_started(evt) -> None:
-            print(f"{_TAG} ✅ Azure session started — listening on server mic")
+        try:
+            while not self._stop_event.is_set():
+                raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+                chunk = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
-        def _on_session_stopped(evt) -> None:
-            print(f"{_TAG} ⏹  Azure session stopped")
-            done.set()
+                # Silero VAD confidence for this chunk
+                import torch  # noqa: PLC0415
+                chunk_tensor = torch.from_numpy(chunk)
+                confidence   = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
 
-        def _on_speech_start_detected(evt) -> None:
-            print(f"{_TAG} 🎙  Speech STARTED (VAD onset)")
-            if self._on_speech_start:
-                try:
-                    self._on_speech_start()
-                except Exception as exc:
-                    print(f"{_TAG} on_speech_start callback error: {exc}")
+                if confidence > 0.5:
+                    # ── Speech detected ───────────────────────────────────────
+                    if not is_speaking:
+                        speech_chunk_count += 1
+                        if speech_chunk_count >= MIN_SPEECH_CHUNKS:
+                            # Confirmed speech onset
+                            is_speaking   = True
+                            silence_count = 0
+                            print(f"{_TAG} 🎙  Speech STARTED (VAD confidence={confidence:.2f})")
+                            self._fire_speech_start()
+                    speech_buffer.append(chunk)
+                    silence_count = 0
 
-        def _on_speech_end_detected(evt) -> None:
-            print(f"{_TAG} 🔇 Speech ENDED (VAD silence — waiting for transcript)")
-            if self._on_speech_end:
-                try:
-                    self._on_speech_end()
-                except Exception as exc:
-                    print(f"{_TAG} on_speech_end callback error: {exc}")
+                else:
+                    # ── Silence detected ──────────────────────────────────────
+                    if not is_speaking:
+                        speech_chunk_count = max(0, speech_chunk_count - 1)
+                        continue
 
-        def _on_recognizing(evt) -> None:
-            """Partial result — shows words as they stream in."""
-            partial = (evt.result.text or "").strip()
-            if partial:
-                print(f"{_TAG} … partial: \"{partial}\"")
+                    speech_buffer.append(chunk)   # keep trailing silence for context
+                    silence_count += 1
 
-        def _on_recognized(evt) -> None:
-            text = (evt.result.text or "").strip()
+                    if silence_count >= SILENCE_CHUNKS:
+                        # Speech segment ended — transcribe
+                        print(f"{_TAG} 🔇 Speech ENDED — transcribing …")
+                        self._fire_speech_end()
+
+                        audio_np = np.concatenate(speech_buffer, axis=0)
+                        speech_buffer     = []
+                        silence_count     = 0
+                        is_speaking       = False
+                        speech_chunk_count = 0
+
+                        self._transcribe(audio_np)
+
+        finally:
+            stream.stop_stream()
+            stream.close()
+            pa.terminate()
+            print(f"{_TAG} Mic stream closed.")
+
+    # ── Transcription ─────────────────────────────────────────────────────────
+
+    def _transcribe(self, audio_np: "np.ndarray") -> None:
+        try:
+            result = self._whisper_pipe({"array": audio_np, "sampling_rate": SAMPLE_RATE})
+            text   = (result.get("text") or "").strip()
             if not text:
-                print(f"{_TAG} ⚠  Empty recognition (silence / background noise)")
+                print(f"{_TAG} ⚠  Empty transcript (silence / noise).")
                 return
             word_count = len(text.split())
-            print(f"{_TAG} ✔  Recognized ({word_count} word{'s' if word_count != 1 else ''}): \"{text}\"")
-            print(f"{_TAG} → Dispatching to Friday agent …")
+            print(f"{_TAG} ✔  Transcript ({word_count} words): \"{text}\"")
             if self._callback:
                 try:
                     self._callback(text)
                 except Exception as exc:
                     print(f"{_TAG} ❌ Transcript callback error: {exc}")
+        except Exception as exc:
+            print(f"{_TAG} ❌ Whisper transcription error: {exc}")
 
-        def _on_canceled(evt) -> None:
-            reason = "unknown"
-            code   = "N/A"
-            detail = ""
+    # ── Callbacks ─────────────────────────────────────────────────────────────
+
+    def _fire_speech_start(self) -> None:
+        # Barge-in: stop TTS if it's currently speaking
+        try:
+            from backend.agent.tts import stop_speaking  # noqa: PLC0415
+            stop_speaking()
+        except Exception:
+            pass
+
+        if self._on_speech_start:
             try:
-                cd     = evt.result.cancellation_details
-                reason = str(cd.reason)
-                detail = cd.error_details or ""        # the actual error message string
-                # error_code attribute name varies by SDK version
-                for attr in ("error_code", "ErrorCode", "cancellation_error_code"):
-                    if hasattr(cd, attr):
-                        code = str(getattr(cd, attr))
-                        break
-            except Exception as e1:
-                detail = f"(could not read cancellation_details: {e1})"
+                self._on_speech_start()
+            except Exception as exc:
+                print(f"{_TAG} on_speech_start callback error: {exc}")
 
-            print(f"{_TAG} ❌ Recognition canceled")
-            print(f"{_TAG}    reason       : {reason}")
-            print(f"{_TAG}    error_code   : {code}")
-            print(f"{_TAG}    error_details: {detail or '(none)'}")
-
-            if "Error" in reason:
-                if not detail:
-                    print(f"{_TAG} 💡 CancellationReason.Error with no details = microphone issue")
-                    print(f"{_TAG}    → Windows Settings > Privacy > Microphone > Allow desktop apps")
-                    print(f"{_TAG}    → Or no microphone connected to this machine")
-                    print(f"{_TAG}    → Or mic locked by Teams/Zoom/Discord")
-                elif "AuthenticationFailure" in detail or "Unauthorized" in detail:
-                    print(f"{_TAG} 💡 Auth failure — double-check AZURE_STT_KEY in .env")
-                elif "connection" in detail.lower() or "network" in detail.lower():
-                    print(f"{_TAG} 💡 Network issue — check internet connectivity")
-                else:
-                    print(f"{_TAG} 💡 Error detail above should indicate the cause")
-            done.set()
-
-        # ── Wire up events ────────────────────────────────────────────────────
-        recognizer.session_started.connect(_on_session_started)
-        recognizer.session_stopped.connect(_on_session_stopped)
-        recognizer.speech_start_detected.connect(_on_speech_start_detected)
-        recognizer.speech_end_detected.connect(_on_speech_end_detected)
-        recognizer.recognizing.connect(_on_recognizing)
-        recognizer.recognized.connect(_on_recognized)
-        recognizer.canceled.connect(_on_canceled)
-
-        print(f"{_TAG} Starting continuous recognition …")
-        recognizer.start_continuous_recognition()
-
-        # Block until stop requested or session ends
-        while not self._stop_event.is_set() and not done.is_set():
-            done.wait(timeout=0.5)
-
-        print(f"{_TAG} Stopping continuous recognition …")
-        recognizer.stop_continuous_recognition()
+    def _fire_speech_end(self) -> None:
+        if self._on_speech_end:
+            try:
+                self._on_speech_end()
+            except Exception as exc:
+                print(f"{_TAG} on_speech_end callback error: {exc}")

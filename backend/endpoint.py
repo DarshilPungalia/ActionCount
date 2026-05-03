@@ -13,23 +13,30 @@ POST /session/{sid}/reset       → reset rep count
 POST /upload/process            → upload video, returns MJPEG stream
 WS   /ws/stream/{session_id}    → live camera WebSocket
 
-New endpoints (auth, profile, workouts, chat)
----------------------------------------------
+Auth & Profile
+--------------
 POST /api/auth/signup           → create account
 POST /api/auth/login            → get JWT token
 GET  /api/user/profile          → get onboarding profile (auth required)
 POST /api/user/profile          → save onboarding profile (auth required)
-POST /api/workout/save          → save a completed set (auth required)
-GET  /api/workout/history       → full workout history for calendar (auth required)
-GET  /api/workout/stats         → monthly muscle group aggregation (auth required)
-POST /api/chat                  → send message to Gemini AI chatbot (auth required)
-DELETE /api/chat                → clear chat history (auth required)
+
+Workouts & Plans
+----------------
+POST /api/workout/save          → save a completed set
+GET  /api/workout/history       → full workout history
+GET  /api/workout/stats         → monthly muscle group aggregation
+GET  /api/plans/today           → get today's weekday plan
+GET  /api/plans/week            → full Mon-Sun schedule
+POST /api/plans/save            → save/upsert a day's plan
+DELETE /api/plans/{weekday}     → delete a day's plan
+GET  /api/plans/suggest         → suggest replacement exercises (same muscle group)
 
 Frontend pages served statically
 ---------------------------------
 GET  /login                     → frontend/login.html
 GET  /dashboard                 → frontend/dashboard.html
 GET  /chatbot                   → frontend/chatbot.html
+GET  /plans                     → frontend/plans.html
 """
 
 from __future__ import annotations
@@ -77,9 +84,9 @@ for p in (str(BACKEND_DIR), str(ROOT_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from backend.utils.session_manager import SessionManager  
-from backend.utils import db                              
-from backend.utils.validation import (                        
+from backend.utils.session_manager import SessionManager
+from backend.utils import db
+from backend.utils.validation import (
     SignupRequest, LoginRequest, TokenResponse,
     UserProfile, UserProfileResponse,
     SaveWorkoutRequest, WorkoutHistoryResponse, WorkoutStatsResponse,
@@ -87,10 +94,19 @@ from backend.utils.validation import (
     ExerciseVolume, VolumeResponse,
     MetricLogRequest, MetricPoint, MetricsResponse,
     ChatRequest, ChatResponse, ChatMessage,
+    SaveWorkoutPlanRequest, WorkoutPlanResponse, WeeklyScheduleResponse,
+    PlanExercise, ReplacementResponse, ReplacementSuggestion,
 )
 from backend.agent.chatbot import _get_response
 from backend.agent.graph import invoke_friday
-from backend.agent.tts import speak as tts_speak, to_ws_envelope, speaking_indicator
+from backend.agent.tts import (
+    speak as tts_speak,
+    to_ws_envelope,
+    speaking_indicator,
+    list_voices,
+    VOICES as TTS_VOICES,
+    _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
+)
 from backend.agent.stt import FridaySTT
 
 # ── Security helpers ──────────────────────────────────────────────────────────
@@ -264,6 +280,13 @@ async def serve_welcome():
     return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
 
 
+@app.get("/plans", response_class=HTMLResponse)
+async def serve_plans():
+    """Serve the Workout Plans page."""
+    p = FRONTEND_DIR / "plans.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 class MeResponse(BaseModel):
     username: str
@@ -340,8 +363,46 @@ async def save_profile(body: UserProfile, username: str = Depends(_get_current_u
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# API — FRIDAY VOICE PREFERENCE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/voices")
+async def get_voices(_: str = Depends(_get_current_user)):
+    """
+    Return available Friday TTS voices.
+    Response: {"voices": [{"name": "Sebastian", "voice_id": "1SaGpH4wLZDmppsPYVpx"}, ...],
+               "default": "<current default voice_id>"}
+    """
+    from backend.agent.tts import VOICES, _DEFAULT_VOICE_ID  # noqa: PLC0415
+    return {
+        "voices":  [{"name": k, "voice_id": v} for k, v in VOICES.items()],
+        "default": _DEFAULT_VOICE_ID,
+    }
+
+
+@app.post("/api/user/voice")
+async def set_voice(body: dict, username: str = Depends(_get_current_user)):
+    """
+    Save the user's preferred Friday TTS voice.
+    Body: {"voice_id": "<eleven_labs_voice_id>"}
+    """
+    from backend.agent.tts import VOICES  # noqa: PLC0415
+    voice_id = (body or {}).get("voice_id", "").strip()
+    valid_ids = set(VOICES.values())
+    if not voice_id or voice_id not in valid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid voice_id. Choose one of: {list(valid_ids)}",
+        )
+    db.update_user_profile(username, {"friday_voice_id": voice_id})
+    voice_name = next((k for k, v in VOICES.items() if v == voice_id), voice_id)
+    return {"status": "saved", "voice_id": voice_id, "voice_name": voice_name}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # API — WORKOUTS
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 @app.post("/api/workout/save")
 async def save_workout(body: SaveWorkoutRequest, username: str = Depends(_get_current_user)):
@@ -482,6 +543,92 @@ async def get_chat_history(username: str = Depends(_get_current_user)):
     """Load existing chat history on page load."""
     history = db.load_chat_history(username)
     return {"history": history}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# API — WORKOUT PLANS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+@app.get("/api/plans/today")
+async def get_today_plan(
+    day: Optional[str] = None,
+    username: str = Depends(_get_current_user),
+):
+    """
+    Return the recurring workout plan for today's weekday (or the supplied ?day= param).
+    Returns null exercises list if no plan is set for that day.
+    """
+    weekday = day or _DAY_NAMES[datetime.now().weekday()]
+    plan = db.get_workout_plan(username, weekday)
+    if not plan:
+        return {"weekday": weekday, "exercises": None, "has_plan": False}
+    return {
+        "weekday":   plan["weekday"],
+        "exercises": plan.get("exercises", []),
+        "has_plan":  True,
+        "updated_at": plan.get("updated_at"),
+    }
+
+
+@app.get("/api/plans/week")
+async def get_week_plan(username: str = Depends(_get_current_user)):
+    """Return the full Mon–Sun workout schedule."""
+    schedule = db.get_all_workout_plans(username)
+    return {
+        day: {
+            "exercises": plan.get("exercises", []) if plan else None,
+            "has_plan":  plan is not None,
+        }
+        for day, plan in schedule.items()
+    }
+
+
+@app.post("/api/plans/save")
+async def save_plan(
+    body: SaveWorkoutPlanRequest,
+    username: str = Depends(_get_current_user),
+):
+    """Upsert a recurring workout plan for a given weekday."""
+    exercises_raw = [ex.model_dump() for ex in body.exercises]
+    try:
+        saved = db.save_workout_plan(username, body.weekday, exercises_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "saved", "weekday": body.weekday, "plan": saved}
+
+
+@app.delete("/api/plans/{weekday}")
+async def delete_plan(weekday: str, username: str = Depends(_get_current_user)):
+    """Soft-delete the recurring plan for the given weekday."""
+    if weekday not in _DAY_NAMES:
+        raise HTTPException(status_code=400, detail=f"Invalid weekday. Must be one of {_DAY_NAMES}.")
+    deleted = db.delete_workout_plan(username, weekday)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"No plan found for {weekday}.")
+    return {"status": "deleted", "weekday": weekday}
+
+
+@app.get("/api/plans/suggest", response_model=ReplacementResponse)
+async def suggest_replacement(
+    exercise: str,
+    limit: int = 4,
+    _: str = Depends(_get_current_user),
+):
+    """
+    Return 3–4 alternative exercises from the same muscle group.
+    Query param: exercise (exercise_key slug, e.g. 'bicep_curl')
+    """
+    suggestions_raw = db.suggest_replacement_exercises(exercise, limit=min(limit, 4))
+    muscle = suggestions_raw[0]["muscle_group"] if suggestions_raw else None
+    return ReplacementResponse(
+        original_exercise=exercise,
+        muscle_group=muscle,
+        suggestions=[ReplacementSuggestion(**s) for s in suggestions_raw],
+    )
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -716,9 +863,16 @@ async def _handle_friday_message(
             print(f"[FridayWS] 🔊 Synthesising TTS for {len(response_text)}-char response …")
             await ws.send_json(speaking_indicator(True))
             t1 = time.monotonic()
-            mp3 = await asyncio.to_thread(tts_speak, response_text)
+            # Resolve user's preferred voice (stored on profile, falls back to env default)
+            user_voice_id = None
+            try:
+                profile = db.get_user_profile(username)
+                user_voice_id = (profile or {}).get("friday_voice_id") or None
+            except Exception:
+                pass
+            mp3 = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
             print(f"[FridayWS] 🔊 TTS done in {time.monotonic()-t1:.2f}s "
-                  f"({'got audio' if mp3 else 'no audio — check AZURE_TTS_KEY'})")
+                  f"({'got audio' if mp3 else 'no audio — check ELEVENLABS_API_KEY'})")
             if mp3:
                 await ws.send_json(to_ws_envelope(mp3, response_text))
             await ws.send_json(speaking_indicator(False))

@@ -52,7 +52,62 @@ const SessionModule = (() => {
 // ══════════════════════════════════════════════════════════════════════════════
 // HUD helpers
 // ══════════════════════════════════════════════════════════════════════════════
-let _lastCount = 0;
+let _lastCount    = 0;
+// Lerp targets — the values the RAF loop is currently animating toward
+let _targetCount  = 0;
+let _targetPct    = 0;
+// Current display values (fractional for smooth animation)
+let _displayCount = 0;
+let _displayPct   = 0;
+let _lerpRafId    = null;
+
+const LERP_SPEED = 0.14;   // fraction of remaining distance per frame (~8 Hz feel at 60 fps)
+
+/** Lerp interpolation helper: a → b at speed t */
+function _lerp(a, b, t) { return a + (b - a) * t; }
+
+/**
+ * RAF loop — smoothly drives displayed values toward their targets.
+ * Only runs while there is still distance to cover.
+ */
+function _lerpLoop() {
+  let stillMoving = false;
+
+  // Rep counter
+  const cdiff = Math.abs(_targetCount - _displayCount);
+  if (cdiff > 0.05) {
+    _displayCount = _lerp(_displayCount, _targetCount, LERP_SPEED);
+    stillMoving   = true;
+  } else {
+    _displayCount = _targetCount;
+  }
+  repCount.textContent = Math.round(_displayCount);
+
+  // Progress bar
+  const pdiff = Math.abs(_targetPct - _displayPct);
+  if (pdiff > 0.1) {
+    _displayPct = _lerp(_displayPct, _targetPct, LERP_SPEED);
+    stillMoving = true;
+  } else {
+    _displayPct = _targetPct;
+  }
+  if (progressFill) {
+    progressFill.style.width = `${_displayPct}%`;
+    const track = progressFill.closest('[role="progressbar"]');
+    if (track) track.setAttribute('aria-valuenow', Math.round(_displayPct));
+  }
+  if (progressPctLabel) progressPctLabel.textContent = `${Math.round(_displayPct)}% complete`;
+
+  if (stillMoving) {
+    _lerpRafId = requestAnimationFrame(_lerpLoop);
+  } else {
+    _lerpRafId = null;
+  }
+}
+
+function _startLerp() {
+  if (!_lerpRafId) _lerpRafId = requestAnimationFrame(_lerpLoop);
+}
 
 const FEEDBACK_COLOUR = {
   'Up':              '#10b981',
@@ -74,7 +129,7 @@ const FEEDBACK_EMOJI = {
  * Also handles legacy: { count, angle, stage }
  */
 function updateHUD(data) {
-  // Rep count (pop animation on increment)
+  // Rep count — set target, let lerp loop animate
   const count = data.counter ?? data.count ?? 0;
   if (count !== _lastCount) {
     repCount.classList.remove('pop');
@@ -82,7 +137,8 @@ function updateHUD(data) {
     repCount.classList.add('pop');
     _lastCount = count;
   }
-  repCount.textContent = count;
+  _targetCount = count;
+  _startLerp();
 
   // Feedback badge
   const fb     = data.feedback ?? 'Get in Position';
@@ -94,14 +150,9 @@ function updateHUD(data) {
   if (feedbackValue) feedbackValue.style.color = colour;
   if (feedbackCard)  feedbackCard.style.borderColor = colour + '44';
 
-  // Progress bar
-  const pct = Math.round(data.progress ?? 0);
-  if (progressFill) {
-    progressFill.style.width = `${pct}%`;
-    const track = progressFill.closest('[role="progressbar"]');
-    if (track) track.setAttribute('aria-valuenow', pct);
-  }
-  if (progressPctLabel) progressPctLabel.textContent = `${pct}% complete`;
+  // Progress bar — set target, lerp loop handles animation
+  _targetPct = Math.round(data.progress ?? 0);
+  _startLerp();
 
   // Form status badge
   const unlocked = data.correct_form ?? false;

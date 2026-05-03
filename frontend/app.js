@@ -37,9 +37,15 @@ function switchTab(mode) {
   panelUpload.hidden = isCam;
 
   if (!isCam) {
+    // Switching to upload tab — stop camera, text mode
     LiveModule.stop();
     if (window.setFridayChannel) setFridayChannel('text');
+    // Make sure upload result img is hidden (in case it was left from previous analysis)
+    if (uploadResultImg) uploadResultImg.style.display = 'none';
+    if (cameraPlaceholder) cameraPlaceholder.classList.remove('hidden');
   } else {
+    // Switching to camera tab — abort any in-progress upload
+    if (window.uploadModuleReset) window.uploadModuleReset();
     setStatus('idle', 'Press Start to begin');
   }
 }
@@ -96,3 +102,126 @@ const EXERCISE_LABELS = {
     setStatus('error', 'Server unreachable — check backend');
   }
 })();
+
+// ══════════════════════════════════════════════════════════════════════════════
+// StateMachine — IDLE → ACTIVE → WORKOUT
+// ══════════════════════════════════════════════════════════════════════════════
+/**
+ * Thin state machine that owns the camera lifecycle.
+ * All code that wants to start/stop the camera MUST call StateMachine.transition()
+ * rather than calling LiveModule directly, so state is always consistent.
+ *
+ * States:
+ *   IDLE    — camera off, no session
+ *   ACTIVE  — camera on, session created, counting reps
+ *   WORKOUT — same as ACTIVE; set when auto-started from a daily plan
+ *
+ * Transitions:
+ *   IDLE    → ACTIVE  : user presses Start Camera (or auto-start)
+ *   ACTIVE  → IDLE    : user presses Stop Camera
+ *   WORKOUT → IDLE    : user presses Stop Camera after auto-start
+ */
+const StateMachine = (() => {
+  const STATES = Object.freeze({ IDLE: 'IDLE', ACTIVE: 'ACTIVE', WORKOUT: 'WORKOUT' });
+  let _state = STATES.IDLE;
+
+  const _listeners = [];
+
+  function getState()       { return _state; }
+  function onState(fn)      { _listeners.push(fn); }
+  function _emit()          { _listeners.forEach(fn => fn(_state)); }
+
+  function transition(next) {
+    if (_state === next) return;
+    console.log(`[StateMachine] ${_state} → ${next}`);
+    const prev = _state;
+    _state = next;
+
+    if ((next === STATES.ACTIVE || next === STATES.WORKOUT) && prev === STATES.IDLE) {
+      LiveModule.start();
+    }
+    if (next === STATES.IDLE && prev !== STATES.IDLE) {
+      LiveModule.stop();
+    }
+    _emit();
+  }
+
+  return { getState, transition, onState, STATES };
+})();
+
+// Re-wire existing buttons through StateMachine
+btnStartCamera.removeEventListener('click', btnStartCamera._smHandler);
+btnStopCamera.removeEventListener('click',  btnStopCamera._smHandler);
+
+btnStartCamera._smHandler = () => StateMachine.transition(StateMachine.STATES.ACTIVE);
+btnStopCamera._smHandler  = () => StateMachine.transition(StateMachine.STATES.IDLE);
+btnStartCamera.addEventListener('click', btnStartCamera._smHandler);
+btnStopCamera.addEventListener('click',  btnStopCamera._smHandler);
+
+// ── Auto-Start: check today's plan and show a prompted banner ─────────────────
+(async function checkTodayPlan() {
+  if (!Auth || !Auth.isLoggedIn()) return;   // only for authenticated users
+  try {
+    const token = Auth.token();
+    if (!token) return;
+
+    const DAY_ABBR = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const today    = DAY_ABBR[new Date().getDay()];
+
+    const res  = await fetch(`${API_BASE}/api/plans/today?day=${today}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data.has_plan || !data.exercises?.length) return;
+
+    // Show banner instead of silently starting — per design decision
+    _showAutoStartBanner(today, data.exercises);
+  } catch (err) {
+    console.warn('[AutoStart] Could not load today\'s plan:', err.message);
+  }
+})();
+
+function _showAutoStartBanner(day, exercises) {
+  // Avoid duplicate banners
+  if (document.getElementById('autostart-sm-banner')) return;
+
+  const exNames = exercises.slice(0, 3).map(e =>
+    (EXERCISE_LABELS[e.exercise_key] || e.exercise_key).replace(/^[^\s]+\s/, '')
+  ).join(', ');
+  const more = exercises.length > 3 ? ` +${exercises.length - 3} more` : '';
+
+  const banner = document.createElement('div');
+  banner.id = 'autostart-sm-banner';
+  banner.style.cssText = [
+    'position:fixed;top:70px;left:50%;transform:translateX(-50%);',
+    'z-index:9999;background:rgba(8,11,22,.95);',
+    'border:1px solid rgba(52,211,153,.4);border-radius:999px;',
+    'padding:.55rem 1.25rem;display:flex;align-items:center;gap:.75rem;',
+    'box-shadow:0 4px 24px rgba(52,211,153,.15);',
+    'font-family:Inter,sans-serif;font-size:.84rem;color:#e2e8f0;',
+    'animation:fadeInDown .35s ease;',
+  ].join('');
+  banner.innerHTML = `
+    <style>@keyframes fadeInDown{from{opacity:0;transform:translateX(-50%) translateY(-12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}</style>
+    <span>🏃</span>
+    <span>Today is <strong style="color:#34d399">${day}</strong>: ${exNames}${more}</span>
+    <button id="autostart-go-btn"
+      style="padding:.3rem .9rem;border-radius:999px;background:#6366f1;color:#fff;border:none;font-size:.8rem;font-weight:600;cursor:pointer;">
+      Start Workout
+    </button>
+    <button onclick="this.closest('#autostart-sm-banner').remove()"
+      style="background:none;border:none;color:#64748b;cursor:pointer;font-size:1rem;">✕</button>`;
+
+  document.body.appendChild(banner);
+
+  document.getElementById('autostart-go-btn').addEventListener('click', () => {
+    banner.remove();
+    switchTab('camera');
+    StateMachine.transition(StateMachine.STATES.WORKOUT);
+  });
+
+  // Auto-dismiss after 12 seconds
+  setTimeout(() => banner?.remove(), 12000);
+}
+

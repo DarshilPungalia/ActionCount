@@ -146,6 +146,7 @@ document.getElementById("signupForm").addEventListener("submit", async (e) => {
   try {
     await Auth.signup(user, pass, email);
     // New users always go to onboarding
+    sessionStorage.setItem('ac_is_new_user', '1');   // welcome.html reads this
     showOnboarding();
   } catch (err) {
     showError("signupError", err.message);
@@ -158,6 +159,7 @@ document.getElementById("signupForm").addEventListener("submit", async (e) => {
 // ── Onboarding modal ──────────────────────────────────────────────────────────
 function showOnboarding() {
   document.getElementById("onboardingOverlay").classList.remove("hidden");
+  goToStep(1);
 }
 
 // Goal option selection (radio via custom UI)
@@ -175,54 +177,111 @@ document.querySelectorAll(".goal-option").forEach((label) => {
 
 // Dietary restriction tags
 document.querySelectorAll("#dietTags .tag-btn").forEach((btn) => {
+  btn.addEventListener("click", () => btn.classList.toggle("active"));
+});
+
+// Equipment tags (wired after DOM ready — step 3 exists in HTML)
+document.querySelectorAll(".equip-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
+    // "none" is exclusive — if selected, deselect others; if another selected, deselect none
+    if (btn.dataset.val === "none") {
+      document.querySelectorAll(".equip-btn").forEach(b => b.classList.remove("active"));
+    } else {
+      document.querySelector('.equip-btn[data-val="none"]')?.classList.remove("active");
+    }
     btn.classList.toggle("active");
   });
 });
 
-// Step navigation
-function goToStep2() {
-  const weight = document.getElementById("obWeight").value;
-  const height = document.getElementById("obHeight").value;
-  const age    = document.getElementById("obAge").value;
-  const gender = document.getElementById("obGender").value;
-  if (!weight || !height || !age || !gender) {
-    alert("Please fill in all fields before proceeding.");
-    return;
+// ── Unified step navigator ────────────────────────────────────────────────────
+const _STEPS   = 4;
+const _TITLES  = [
+  { icon: "🎯", title: "Tell us about yourself",  sub: "Basic stats for your AI coach" },
+  { icon: "🏆", title: "Your fitness goal",        sub: "What are you working towards?" },
+  { icon: "🏋️", title: "Your equipment",           sub: "We'll tailor plans to what you have" },
+  { icon: "📅", title: "Build your first plan",    sub: "Let's get your week scheduled!" },
+];
+
+function goToStep(n) {
+  for (let i = 1; i <= _STEPS; i++) {
+    const stepEl = document.getElementById(`obStep${i}`);
+    const dotEl  = document.getElementById(`step${i}Dot`);
+    if (!stepEl || !dotEl) continue;
+    stepEl.classList.toggle("hidden", i !== n);
+    dotEl.classList.toggle("bg-indigo-500", i <= n);
+    dotEl.classList.toggle("bg-white/10",   i > n);
   }
-  document.getElementById("obStep1").classList.add("hidden");
-  document.getElementById("obStep2").classList.remove("hidden");
-  document.getElementById("step2Dot").classList.replace("bg-white/10", "bg-indigo-500");
+  const meta = _TITLES[n - 1];
+  if (meta) {
+    const icon = document.getElementById("ob-icon");
+    const title = document.getElementById("ob-title");
+    const sub   = document.getElementById("ob-subtitle");
+    if (icon)  icon.textContent  = meta.icon;
+    if (title) title.textContent = meta.title;
+    if (sub)   sub.textContent   = meta.sub;
+  }
 }
 
-function goToStep1() {
-  document.getElementById("obStep2").classList.add("hidden");
-  document.getElementById("obStep1").classList.remove("hidden");
-  document.getElementById("step2Dot").classList.replace("bg-indigo-500", "bg-white/10");
-}
+// Keep legacy names for the inline onclick attributes still present in the HTML
+function goToStep1() { goToStep(1); }
+function goToStep2() { goToStep(2); }
 
-// Submit onboarding
-document.getElementById("onboardingForm").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  clearError("obError");
+// ── Step 1 → 2 validation ────────────────────────────────────────────────────
+// The Next → button calls goToStep(2) directly; we validate inline via override
+const _origGoToStep = goToStep;
+// Re-bind step 1 Next button with validation
+(function() {
+  // Replace onclick on step1's Next button by overriding at click time
+  document.querySelector('#obStep1 .btn-primary')?.addEventListener('click', function(e) {
+    e.stopImmediatePropagation();
+    const weight = document.getElementById("obWeight").value;
+    const height = document.getElementById("obHeight").value;
+    const age    = document.getElementById("obAge").value;
+    const gender = document.getElementById("obGender").value;
+    if (!weight || !height || !age || !gender) {
+      alert("Please fill in all fields before proceeding.");
+      return;
+    }
+    goToStep(2);
+  }, true);
 
+  // Step 2 → 3 validation
+  document.querySelector('#obStep2 .btn-primary')?.addEventListener('click', function(e) {
+    e.stopImmediatePropagation();
+    const target = document.querySelector('input[name="target"]:checked');
+    if (!target) {
+      const err = document.getElementById("obError2");
+      if (err) { err.textContent = "Please select a fitness goal."; err.classList.remove("hidden"); }
+      return;
+    }
+    const err = document.getElementById("obError2");
+    if (err) err.classList.add("hidden");
+    goToStep(3);
+  }, true);
+})();
+
+// ── Profile submit (from Step 3 "Save Profile" button) ───────────────────────
+async function submitProfile() {
   const target = document.querySelector('input[name="target"]:checked');
   if (!target) {
-    showError("obError", "Please select a fitness goal.");
+    goToStep(2);
+    alert("Please select a fitness goal first.");
     return;
   }
 
-  const restrictions = [...document.querySelectorAll("#dietTags .tag-btn.active")].map(
-    (b) => b.dataset.val
-  );
+  const restrictions = [...document.querySelectorAll("#dietTags .tag-btn.active")].map(b => b.dataset.val);
+  const equipment    = [...document.querySelectorAll(".equip-btn.active")].map(b => b.dataset.val);
+  const goalsExtra   = (document.getElementById("obGoalsExtra")?.value || "").trim();
 
   const payload = {
-    weight_kg: parseFloat(document.getElementById("obWeight").value),
-    height_cm: parseFloat(document.getElementById("obHeight").value),
-    age:       parseInt(document.getElementById("obAge").value, 10),
-    gender:    document.getElementById("obGender").value,
-    target:    target.value,
-    dietary_restrictions: restrictions,
+    weight_kg:              parseFloat(document.getElementById("obWeight").value),
+    height_cm:              parseFloat(document.getElementById("obHeight").value),
+    age:                    parseInt(document.getElementById("obAge").value, 10),
+    gender:                 document.getElementById("obGender").value,
+    target:                 target.value,
+    goals_extra:            goalsExtra || null,
+    equipment_availability: equipment.length ? equipment : ["none"],
+    dietary_restrictions:   restrictions,
   };
 
   const btn = document.getElementById("obSubmitBtn");
@@ -231,10 +290,31 @@ document.getElementById("onboardingForm").addEventListener("submit", async (e) =
 
   try {
     await Profile.save(payload);
-    window.location.href = "/welcome";
+    // Advance to step 4 — first plan creation
+    goToStep(4);
   } catch (err) {
-    showError("obError", err.message);
+    alert("Could not save profile: " + err.message);
     btn.disabled = false;
-    btn.textContent = "Get Started 🚀";
+    btn.textContent = "Save Profile →";
   }
-});
+}
+
+// ── Step 4 navigation helpers ─────────────────────────────────────────────────
+function goToPlansManual() {
+  // Mark welcome seen so plans page doesn't redirect back
+  sessionStorage.setItem("seen_welcome", "1");
+  window.location.href = "/plans";
+}
+
+function goToChatForPlan() {
+  sessionStorage.setItem("seen_welcome", "1");
+  // Pre-seed a plan-generation prompt in sessionStorage for chatbot.html to pick up
+  sessionStorage.setItem("chatbot_initial_prompt", "Generate a weekly workout plan for me based on my goals and equipment.");
+  window.location.href = "/chatbot";
+}
+
+function skipPlanCreation() {
+  sessionStorage.setItem("seen_welcome", "1");
+  window.location.href = "/welcome";
+}
+
