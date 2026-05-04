@@ -353,7 +353,12 @@ async def get_profile(username: str = Depends(_get_current_user)):
     profile = db.get_user_profile(username)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not set. Complete onboarding.")
-    return UserProfileResponse(username=username, onboarding_complete=True, **profile)
+    try:
+        return UserProfileResponse(username=username, onboarding_complete=True, **profile)
+    except Exception:
+        # Profile exists but is missing required fields (e.g. saved with an older schema).
+        # Treat as incomplete — the frontend will prompt the user to redo onboarding.
+        raise HTTPException(status_code=404, detail="Profile incomplete. Complete onboarding.")
 
 
 @app.post("/api/user/profile", response_model=UserProfileResponse)
@@ -805,6 +810,19 @@ async def ws_stream(websocket: WebSocket, session_id: str):
 
             await websocket.send_json({**payload, "skipped": False})
 
+            # ── Drain TTS queue (posture corrections + motivation) ─────────────────
+            while not session.tts_queue.empty():
+                try:
+                    _kind, _text = session.tts_queue.get_nowait()
+                    # Push to all Friday WS connections in voice mode
+                    for _uname, _fws in list(_friday_ws_connections.items()):
+                        if _get_user_channel(_uname) == "voice":
+                            asyncio.create_task(
+                                _push_friday_tts(_fws, _uname, _text)
+                            )
+                except Exception:
+                    break
+
     except WebSocketDisconnect:
         pass
     finally:
@@ -884,6 +902,27 @@ async def _handle_friday_message(
 
     except Exception as exc:
         print(f"[FridayWS] ❌ _handle_friday_message error for {username!r}: {exc}")
+
+
+async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
+    """
+    Synthesise `text` via TTS and push audio to the Friday WebSocket.
+    Used for posture corrections (6 s cooldown) and failure-motivation phrases.
+    """
+    try:
+        user_voice_id = None
+        try:
+            profile = db.get_user_profile(username)
+            user_voice_id = (profile or {}).get("friday_voice_id") or None
+        except Exception:
+            pass
+        await ws.send_json(speaking_indicator(True))
+        mp3 = await asyncio.to_thread(tts_speak, text, user_voice_id)
+        if mp3:
+            await ws.send_json(to_ws_envelope(mp3, text))
+        await ws.send_json(speaking_indicator(False))
+    except Exception as exc:
+        print(f"[FridayTTS] ❌ push error for {username!r}: {exc}")
 
 
 # ── /ws/friday WebSocket ──────────────────────────────────────────────────────

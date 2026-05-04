@@ -87,6 +87,7 @@
 
   const repVal      = makeStatRow('Reps');
   const formVal     = makeStatRow('Feedback');
+  const postureVal  = makeStatRow('Posture');
   const progressVal = makeStatRow('Progress');
   const angleVal    = makeStatRow('Angle');
 
@@ -98,9 +99,15 @@
     const d = e.detail || {};
     repVal.textContent      = d.counter ?? d.count ?? 0;
     formVal.textContent     = d.feedback ?? 'Get in Position';
+
+    // Posture row — red when error active, muted when clean
+    const pMsg = d.posture_msg || null;
+    postureVal.textContent  = pMsg ? '\u26a0\ufe0f ' + pMsg : '\u2705 Good form';
+    postureVal.style.color  = pMsg ? '#fca5a5' : 'rgba(255,255,255,0.92)';
+
     progressVal.textContent = Math.round(d.progress ?? 0) + '%';
     const angle = d.angle ?? null;
-    angleVal.textContent    = angle !== null ? Math.round(angle) + '°' : '—';
+    angleVal.textContent    = angle !== null ? Math.round(angle) + '\u00b0' : '\u2014';
   });
 
   // ── Patch updateHUD to fire hud:stats event ───────────────────────────────

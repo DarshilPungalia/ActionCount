@@ -117,11 +117,42 @@ const FEEDBACK_COLOUR = {
 };
 
 const FEEDBACK_EMOJI = {
-  'Up':              '⬆️',
-  'Down':            '⬇️',
-  'Fix Form':        '⚠️',
-  'Get in Position': '📍',
+  'Up':              '\u2b06\ufe0f',
+  'Down':            '\u2b07\ufe0f',
+  'Fix Form':        '\u26a0\ufe0f',
+  'Get in Position': '\ud83d\udccd',
 };
+
+// ── Posture correction banner ─────────────────────────────────────────────────
+let _postureEl = null;
+function _getPostureEl() {
+  if (_postureEl) return _postureEl;
+  _postureEl = document.createElement('div');
+  _postureEl.id = 'posture-correction-banner';
+  Object.assign(_postureEl.style, {
+    display:         'none',
+    position:        'fixed',
+    bottom:          '90px',
+    left:            '50%',
+    transform:       'translateX(-50%)',
+    zIndex:          '80',
+    padding:         '10px 18px',
+    borderRadius:    '10px',
+    background:      'rgba(239,68,68,0.18)',
+    border:          '1px solid rgba(239,68,68,0.5)',
+    color:           '#fca5a5',
+    fontSize:        '14px',
+    fontWeight:      '700',
+    fontFamily:      'Inter, sans-serif',
+    letterSpacing:   '0.02em',
+    backdropFilter:  'blur(10px)',
+    whiteSpace:      'nowrap',
+    pointerEvents:   'none',
+    transition:      'opacity 0.3s ease',
+  });
+  document.body.appendChild(_postureEl);
+  return _postureEl;
+}
 
 /**
  * Update all stat-card DOM elements.
@@ -157,7 +188,19 @@ function updateHUD(data) {
   // Form status badge
   const unlocked = data.correct_form ?? false;
   if (formStatus)     formStatus.classList.toggle('unlocked', unlocked);
-  if (formStatusText) formStatusText.textContent = unlocked ? '✅ Form Unlocked' : '📍 Get in Position';
+  if (formStatusText) formStatusText.textContent = unlocked ? '\u2705 Form Unlocked' : '\ud83d\udccd Get in Position';
+
+  // Posture correction banner — updates immediately (TTS cooldown handled server-side)
+  const postureMsg = data.posture_msg || null;
+  const banner = _getPostureEl();
+  if (postureMsg) {
+    banner.textContent    = '\u26a0\ufe0f\u2002' + postureMsg;
+    banner.style.display  = 'block';
+    banner.style.opacity  = '1';
+  } else {
+    banner.style.opacity  = '0';
+    setTimeout(() => { if (banner.style.opacity === '0') banner.style.display = 'none'; }, 300);
+  }
 
   // Legacy angle arc
   const angle = data.angle ?? null;

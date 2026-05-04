@@ -6,6 +6,7 @@ Singleton that manages per-session counter lifecycles.
 
 from __future__ import annotations
 
+import queue
 import time
 import threading
 import uuid
@@ -84,14 +85,16 @@ class InferenceWorker(threading.Thread):
     def __init__(self, counter, atomic_frame: AtomicFrame,
                  atomic_result: AtomicResult,
                  metrics: PipelineMetrics,
+                 tts_queue: "queue.Queue",
                  session_id: str = ""):
         super().__init__(daemon=True, name=f"InferWorker-{session_id[:8]}")
-        self._counter      = counter
-        self._atomic_frame = atomic_frame
+        self._counter       = counter
+        self._atomic_frame  = atomic_frame
         self._atomic_result = atomic_result
-        self._metrics      = metrics
-        self._stop_event   = threading.Event()
-        self._interval     = 1.0 / _INFERENCE_TARGET_FPS
+        self._metrics       = metrics
+        self._tts_queue     = tts_queue
+        self._stop_event    = threading.Event()
+        self._interval      = 1.0 / _INFERENCE_TARGET_FPS
 
     def stop(self) -> None:
         """Signal the thread to exit on its next iteration."""
@@ -129,10 +132,28 @@ class InferenceWorker(threading.Thread):
             self._atomic_result.write({
                 "counter":      result["counter"],
                 "feedback":     result["feedback"],
+                "posture_error": result.get("posture_error"),
+                "posture_msg":   result.get("posture_msg"),
+                "velocity":      result.get("velocity", 0.0),
                 "progress":     round(result["progress"], 1),
                 "correct_form": result["correct_form"],
                 "keypoints":    kps_list,
             })
+
+            # ── Drain TTS events from counter ──────────────────────────────
+            posture_tts = self._counter.pop_posture_tts()
+            if posture_tts:
+                try:
+                    self._tts_queue.put_nowait(("posture", posture_tts))
+                except queue.Full:
+                    pass
+
+            motivation = self._counter.pop_failure_motivation()
+            if motivation:
+                try:
+                    self._tts_queue.put_nowait(("motivation", motivation))
+                except queue.Full:
+                    pass
 
             # ── E2E latency ────────────────────────────────────────────────────
             self._metrics.record_e2e(time.monotonic() - e2e_start)
@@ -156,13 +177,18 @@ class SessionData:
         self.counter    = counter
         self.exercise   = exercise
 
-        # ── New: atomic slots + inference thread ──────────────────────────────
+        # ── Atomic slots + inference thread ───────────────────────────────────
         self.atomic_frame  = AtomicFrame()
         self.atomic_result = AtomicResult()
         self.metrics       = PipelineMetrics(session_id)
-        self._worker       = InferenceWorker(
+
+        # Thread-safe queue for TTS events (posture corrections, motivation)
+        # Drained by the WS stream handler in endpoint.py
+        self.tts_queue: queue.Queue = queue.Queue(maxsize=8)
+
+        self._worker = InferenceWorker(
             counter, self.atomic_frame, self.atomic_result,
-            self.metrics, session_id,
+            self.metrics, self.tts_queue, session_id,
         )
         self._worker.start()
 
@@ -171,6 +197,9 @@ class SessionData:
         self.last_result: dict = {
             "counter":      0,
             "feedback":     "Get in Position",
+            "posture_error": None,
+            "posture_msg":   None,
+            "velocity":      0.0,
             "progress":     0.0,
             "correct_form": False,
             "keypoints":    None,
@@ -219,6 +248,7 @@ class SessionManager:
         data.counter.reset()
         data.last_result = {
             "counter": 0, "feedback": "Get in Position",
+            "posture_error": None, "posture_msg": None, "velocity": 0.0,
             "progress": 0.0, "correct_form": False, "keypoints": None,
         }
         # Write a sentinel so InferenceWorker picks up reset state

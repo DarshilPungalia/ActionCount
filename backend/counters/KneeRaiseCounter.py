@@ -1,22 +1,17 @@
 """
 KneeRaiseCounter.py
 -------------------
-Counts knee-raise reps using hip-knee-ankle angle (per_limb).
+Counts knee-raise reps using hip-knee-ankle angle (per-limb).
 
-COCO-17 keypoints:
-  Left leg  : hip=11, knee=13, ankle=15
-  Right leg : hip=12, knee=14, ankle=16
+Posture checks (priority order):
+  1. Leaning backward  — Δx(shoulder, hip) increases (torso tilts back)
+  2. Swinging legs     — oscillating Δx(knee) between frames
+  3. Uneven raise      — |left_knee_y - right_knee_y| > threshold
+  4. Incomplete height — knee_y not reaching hip_y level at top
 
-UP_ANGLE   : 160°  (leg extended / standing)
-DOWN_ANGLE : 80°   (knee raised to roughly 90°+)
-MODE       : per_limb
-
-Each knee raise is counted independently; alternating knees accumulate
-in the same counter.
-
-Inverted=False:
-  stage='up'   when angle > 160 (leg extended)
-  stage='down' (+ count) when angle < 80 AND stage was 'up'
+COCO-17:  Left leg: hip=11, knee=13, ankle=15
+          Right leg: hip=12, knee=14, ankle=16
+          Shoulder: 5 (L), 6 (R)
 """
 
 import numpy as np
@@ -27,6 +22,11 @@ class KneeRaiseCounter(BaseCounter):
 
     UP_ANGLE   = 160
     DOWN_ANGLE = 110
+
+    _LEAN_THRESH     = 30   # px: shoulder-hip horizontal offset = leaning
+    _SWING_THRESH    = 20   # px: knee horizontal oscillation
+    _UNEVEN_THRESH   = 25   # px: knee height difference
+    _HEIGHT_MARGIN   = 10   # px: knee must reach above hip_y at top
 
     def _compute(self, frame: np.ndarray, landmarks_list: list) -> tuple:
         left_raw  = self.pose_detector.findAngle(frame, 11, 13, 15, landmarks_list, draw=True)
@@ -40,9 +40,11 @@ class KneeRaiseCounter(BaseCounter):
 
         avg_angle    = sum(available) / len(available)
         progress_pct = float(np.interp(avg_angle, (self.DOWN_ANGLE, self.UP_ANGLE), (100, 0)))
-        form_ok      = avg_angle > 130   # must start with legs extended
+        form_ok      = avg_angle > 130
 
-        self._tick_per_limb(left_angle, right_angle, self.UP_ANGLE, self.DOWN_ANGLE, inverted=False)
+        counted = self._tick_per_limb(left_angle, right_angle, self.UP_ANGLE, self.DOWN_ANGLE, inverted=False)
+        if counted:
+            self._record_rep_velocity(13)  # knee velocity
 
         if self.correct_form:
             active_stage = self.left_stage or self.right_stage
@@ -57,18 +59,38 @@ class KneeRaiseCounter(BaseCounter):
 
         return progress_pct, feedback, form_ok
 
+    def _check_posture(self, frame, lm) -> tuple:
+        LS = self._kp_pos(lm, 5);  RS  = self._kp_pos(lm, 6)
+        LH = self._kp_pos(lm, 11); RH  = self._kp_pos(lm, 12)
+        LK = self._kp_pos(lm, 13); RK  = self._kp_pos(lm, 14)
 
-if __name__ == "__main__":
-    import cv2
-    counter = KneeRaiseCounter()
-    cap = cv2.VideoCapture(0)
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        result = counter.process_frame(frame)
-        cv2.imshow("Knee Raise Counter", result["frame"])
-        if cv2.waitKey(10) & 0xFF == ord("q"):
-            break
-    cap.release()
-    cv2.destroyAllWindows()
+        # 1. Leaning backward — shoulder drifts behind hip
+        if LS and LH and RS and RH:
+            l_lean = LH[0] - LS[0]   # positive = shoulder behind hip
+            r_lean = RS[0] - RH[0]
+            if max(l_lean, r_lean) > self._LEAN_THRESH:
+                return "lean_back", "Keep torso upright"
+
+        # 2. Swinging legs — knee oscillates horizontally between frames
+        if len(self._skeleton_window) >= 2 and LK and RK:
+            prev_map = list(self._skeleton_window)[-2][1]
+            prev_lk  = prev_map.get(13)
+            prev_rk  = prev_map.get(14)
+            if prev_lk and abs(LK[0] - prev_lk[0]) > self._SWING_THRESH:
+                return "swing_legs", "Avoid swinging, control movement"
+            if prev_rk and abs(RK[0] - prev_rk[0]) > self._SWING_THRESH:
+                return "swing_legs", "Avoid swinging, control movement"
+
+        # 3. Uneven raise
+        if LK and RK:
+            if abs(LK[1] - RK[1]) > self._UNEVEN_THRESH:
+                return "uneven_raise", "Lift both legs evenly"
+
+        # 4. Incomplete knee height — knee must reach hip level
+        if self.stage == "down":  # "down" = knee raised in KneeRaise
+            if LH and LK and LK[1] > LH[1] + self._HEIGHT_MARGIN:
+                return "incomplete_height", "Raise knees higher"
+            if RH and RK and RK[1] > RH[1] + self._HEIGHT_MARGIN:
+                return "incomplete_height", "Raise knees higher"
+
+        return None, None
