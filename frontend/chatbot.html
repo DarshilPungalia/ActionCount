@@ -198,15 +198,21 @@
 
 <script src="/static/js/api.js"></script>
 <script>
-  // Async auth guard — validate token against backend on every page load
+  // Async auth guard — only redirect to login on a real 401.
+  // A 200 with onboarding_complete:false (profile not yet set) is fine here.
   (async function authGuard() {
     if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
     try {
       await apiFetch('/api/user/profile');
       document.getElementById('usernameTag').textContent = Auth.username();
-    } catch (_) {
-      clearToken();
-      window.location.href = '/login';
+    } catch (err) {
+      if (err.message && err.message.includes('401')) {
+        clearToken();
+        window.location.href = '/login';
+      } else {
+        // Profile not set or other non-auth error — stay on page
+        document.getElementById('usernameTag').textContent = Auth.username();
+      }
     }
   })();
 </script>

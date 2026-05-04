@@ -120,7 +120,14 @@
   try {
     await apiFetch('/api/user/profile');
     document.getElementById('usernameTag').textContent = Auth.username();
-  } catch (_) { clearToken(); window.location.href = '/login'; }
+  } catch (err) {
+    if (err.message && err.message.includes('401')) {
+      clearToken();
+      window.location.href = '/login';
+    } else {
+      document.getElementById('usernameTag').textContent = Auth.username();
+    }
+  }
 })();
 </script>
 <script src="/static/js/metrics.js"></script>

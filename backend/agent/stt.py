@@ -137,8 +137,9 @@ class FridaySTT:
             feature_extractor=processor.feature_extractor,
             torch_dtype=torch_dtype,
             device=device,
+            generate_kwargs={"language": "english", "task": "transcribe"},
         )
-        print(f"{_TAG} ✅ Whisper loaded on {device}.")
+        print(f"{_TAG} Whisper loaded on {device} — forced language: English.")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -237,20 +238,30 @@ class FridaySTT:
 
     def _transcribe(self, audio_np: "ndarray") -> None:
         try:
-            result = self._whisper_pipe({"array": audio_np, "sampling_rate": SAMPLE_RATE})
-            text   = (result.get("text") or "").strip()
+            # Minimum duration gate: skip very short clips (< 0.4 s) that are
+            # almost certainly noise and cause hallucinated multilingual output.
+            duration_s = len(audio_np) / SAMPLE_RATE
+            if duration_s < 0.4:
+                print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
+                return
+
+            result = self._whisper_pipe(
+                {"array": audio_np, "sampling_rate": SAMPLE_RATE},
+                generate_kwargs={"language": "english", "task": "transcribe"},
+            )
+            text = (result.get("text") or "").strip()
             if not text:
-                print(f"{_TAG} ⚠  Empty transcript (silence / noise).")
+                print(f"{_TAG} Empty transcript (silence / noise).")
                 return
             word_count = len(text.split())
-            print(f"{_TAG} ✔  Transcript ({word_count} words): \"{text}\"")
+            print(f"{_TAG} Transcript ({word_count} words): \"{text}\"")
             if self._callback:
                 try:
                     self._callback(text)
                 except Exception as exc:
-                    print(f"{_TAG} ❌ Transcript callback error: {exc}")
+                    print(f"{_TAG} Transcript callback error: {exc}")
         except Exception as exc:
-            print(f"{_TAG} ❌ Whisper transcription error: {exc}")
+            print(f"{_TAG} Whisper transcription error: {exc}")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 

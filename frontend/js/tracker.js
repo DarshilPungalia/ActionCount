@@ -110,11 +110,19 @@ if (saveBtn) {
       const volStr = weight > 0 ? ` · ${(reps * weight).toFixed(1)} kg volume` : "";
       const calStr = calories > 0 ? ` · ~${calories.toFixed(1)} kcal` : "";
       showToast(`✅ Saved ${reps} reps of ${exercise}${volStr}${calStr}`);
+
       // Reset rep timestamp tracker
       _repTimestamps = [];
       _lastRepCount  = 0;
-      const resetBtn = document.getElementById("btn-reset");
-      if (resetBtn) resetBtn.click();
+
+      if (window.PlanLoader && PlanLoader.isActive()) {
+        // PlanLoader will stop camera, show rest timer, then restart for next set
+        PlanLoader.onSetSaved(reps);
+      } else {
+        // Manual mode — just reset the rep counter
+        const resetBtn = document.getElementById("btn-reset");
+        if (resetBtn) resetBtn.click();
+      }
     } catch (err) {
       showToast(`⚠️ ${err.message}`, true);
     } finally {
@@ -132,3 +140,6 @@ function showToast(msg, isError = false) {
   t.classList.add("show");
   setTimeout(() => t.classList.remove("show"), 3500);
 }
+
+// Expose showToast globally so PlanLoader can use it
+window.showToast = showToast;

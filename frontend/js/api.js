@@ -95,6 +95,16 @@ const Chat = {
   async clear()        { return apiFetch("/api/chat", { method: "DELETE" }); },
 };
 
+const Plan = {
+  /** Fetch today's plan: {weekday, exercises:[{exercise_key,sets,reps,weight_kg}], has_plan} */
+  async today(day = null) {
+    const qs = day ? `?day=${encodeURIComponent(day)}` : '';
+    return apiFetch(`/api/plans/today${qs}`);
+  },
+  /** Full Mon-Sun weekly schedule */
+  async week() { return apiFetch('/api/plans/week'); },
+};
+
 function requireAuth() {
   if (!Auth.isLoggedIn()) { window.location.href = "/login"; return false; }
   return true;

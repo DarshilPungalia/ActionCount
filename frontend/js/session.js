@@ -154,9 +154,44 @@ function _getPostureEl() {
   return _postureEl;
 }
 
+// ── HUD Feedback debounce ────────────────────────────────────────────────────────
+const FEEDBACK_DEBOUNCE_MS = 400;   // ms: feedback text settles before committing
+const POSTURE_DEBOUNCE_MS  = 600;   // ms: posture messages (less disruptive)
+
+let _feedbackTimer   = null;
+let _pendingFb       = null;
+let _committedFb     = null;
+
+let _postureTimer    = null;
+let _pendingPosture  = null;
+let _committedPosture = null;
+
+function _commitFeedback(fb) {
+  _committedFb = fb;
+  const colour = FEEDBACK_COLOUR[fb] ?? '#9ca3af';
+  const emoji  = FEEDBACK_EMOJI[fb]  ?? '\ud83d\udccd';
+  if (feedbackEmoji) feedbackEmoji.textContent = emoji;
+  if (feedbackText)  feedbackText.textContent  = fb;
+  if (feedbackValue) feedbackValue.style.color = colour;
+  if (feedbackCard)  feedbackCard.style.borderColor = colour + '44';
+}
+
+function _commitPosture(msg) {
+  _committedPosture = msg;
+  const banner = _getPostureEl();
+  if (msg) {
+    banner.textContent   = '\u26a0\ufe0f\u2002' + msg;
+    banner.style.display = 'block';
+    banner.style.opacity = '1';
+  } else {
+    banner.style.opacity = '0';
+    setTimeout(() => { if (banner.style.opacity === '0') banner.style.display = 'none'; }, 300);
+  }
+}
+
 /**
  * Update all stat-card DOM elements.
- * Accepts: { counter, feedback, progress, correct_form, keypoints, skipped }
+ * Accepts: { counter, feedback, progress, correct_form, posture_msg, velocity, skipped }
  * Also handles legacy: { count, angle, stage }
  */
 function updateHUD(data) {
@@ -171,15 +206,13 @@ function updateHUD(data) {
   _targetCount = count;
   _startLerp();
 
-  // Feedback badge
-  const fb     = data.feedback ?? 'Get in Position';
-  const colour = FEEDBACK_COLOUR[fb] ?? '#9ca3af';
-  const emoji  = FEEDBACK_EMOJI[fb]  ?? '📍';
-
-  if (feedbackEmoji) feedbackEmoji.textContent = emoji;
-  if (feedbackText)  feedbackText.textContent  = fb;
-  if (feedbackValue) feedbackValue.style.color = colour;
-  if (feedbackCard)  feedbackCard.style.borderColor = colour + '44';
+  // Feedback badge — debounced 400 ms to prevent rapid Up↔Down flicker
+  const fb = data.feedback ?? 'Get in Position';
+  if (fb !== _committedFb) {
+    clearTimeout(_feedbackTimer);
+    _pendingFb    = fb;
+    _feedbackTimer = setTimeout(() => _commitFeedback(_pendingFb), FEEDBACK_DEBOUNCE_MS);
+  }
 
   // Progress bar — set target, lerp loop handles animation
   _targetPct = Math.round(data.progress ?? 0);
@@ -190,16 +223,12 @@ function updateHUD(data) {
   if (formStatus)     formStatus.classList.toggle('unlocked', unlocked);
   if (formStatusText) formStatusText.textContent = unlocked ? '\u2705 Form Unlocked' : '\ud83d\udccd Get in Position';
 
-  // Posture correction banner — updates immediately (TTS cooldown handled server-side)
+  // Posture correction banner — debounced 600 ms (HUD waits, not too jumpy)
   const postureMsg = data.posture_msg || null;
-  const banner = _getPostureEl();
-  if (postureMsg) {
-    banner.textContent    = '\u26a0\ufe0f\u2002' + postureMsg;
-    banner.style.display  = 'block';
-    banner.style.opacity  = '1';
-  } else {
-    banner.style.opacity  = '0';
-    setTimeout(() => { if (banner.style.opacity === '0') banner.style.display = 'none'; }, 300);
+  if (postureMsg !== _committedPosture) {
+    clearTimeout(_postureTimer);
+    _pendingPosture = postureMsg;
+    _postureTimer   = setTimeout(() => _commitPosture(_pendingPosture), POSTURE_DEBOUNCE_MS);
   }
 
   // Legacy angle arc

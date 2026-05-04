@@ -366,13 +366,20 @@
 
   <script src="/static/js/api.js"></script>
   <script>
-    // Auth guard
+    // Auth guard — only redirect to login on a real auth failure (401).
     (async function() {
       if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
       try {
         await apiFetch('/api/user/profile');
         document.getElementById('nav-username').textContent = Auth.username();
-      } catch (_) { window.location.href = '/login'; }
+      } catch (err) {
+        if (err.message && err.message.includes('401')) {
+          clearToken();
+          window.location.href = '/login';
+        } else {
+          document.getElementById('nav-username').textContent = Auth.username();
+        }
+      }
     })();
   </script>
 

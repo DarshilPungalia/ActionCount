@@ -164,25 +164,45 @@ def _get_user_channel(username: str) -> str:
     return _friday_channels.get(username, "text")
 
 
+async def _broadcast_friday_async(msg: dict) -> None:
+    """Async coroutine — send msg to all active Friday voice connections."""
+    for username, ws in list(_friday_ws_connections.items()):
+        if _get_user_channel(username) == "voice":
+            try:
+                await ws.send_json(msg)
+            except Exception:
+                pass
+
+# Keep the sync wrapper name for any legacy callers, now implemented safely
 def _broadcast_friday(msg: dict) -> None:
     """
     Push a WebSocket message to ALL active Friday voice connections.
-    Safe to call from a non-async thread (uses run_coroutine_threadsafe).
+    NOTE: only safe when a loop is already running (from async context).
+    For background-thread callers use run_coroutine_threadsafe directly.
     """
-    loop = asyncio.get_event_loop()
-    for username, ws in list(_friday_ws_connections.items()):
-        if _get_user_channel(username) == "voice":
-            asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.ensure_future(_broadcast_friday_async(msg), loop=loop)
+    except RuntimeError:
+        pass   # no running loop — silently ignore (will be replaced by threadsafe path)
 
 
 def _ensure_stt_running() -> None:
     """
-    Lazily start the Azure STT daemon the first time a user switches to voice
+    Lazily start the Whisper STT daemon the first time a user switches to voice
     channel. No-op if the daemon is already running.
     """
     stt = FridaySTT.instance()
     if stt._thread and stt._thread.is_alive():
         return  # already running
+
+    # Capture the running event loop NOW (we're inside an async route handler).
+    # The STT callbacks fire from a background thread that has NO event loop,
+    # so we must close over this reference instead of calling get_event_loop() later.
+    try:
+        _loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = asyncio.get_event_loop()
 
     def _on_transcript(transcript: str):
         print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 dispatching to agent for all voice users")
@@ -194,14 +214,20 @@ def _ensure_stt_running() -> None:
             print(f"[FridayWS] Invoking agent for {username!r} | frame={'yes' if frame else 'none'}")
             asyncio.run_coroutine_threadsafe(
                 _handle_friday_message(ws, username, transcript, channel, frame),
-                asyncio.get_event_loop(),
+                _loop,
             )
 
     def _on_speech_start():
-        _broadcast_friday({"type": "friday_listening", "data": {"active": True}})
+        asyncio.run_coroutine_threadsafe(
+            _broadcast_friday_async({"type": "friday_listening", "data": {"active": True}}),
+            _loop,
+        )
 
     def _on_speech_end():
-        _broadcast_friday({"type": "friday_listening", "data": {"active": False}})
+        asyncio.run_coroutine_threadsafe(
+            _broadcast_friday_async({"type": "friday_listening", "data": {"active": False}}),
+            _loop,
+        )
 
     print("[FridaySTT] First voice connection — starting STT daemon")
     stt.start(_on_transcript, on_speech_start=_on_speech_start, on_speech_end=_on_speech_end)
@@ -348,17 +374,22 @@ async def login(body: LoginRequest):
 # API — USER PROFILE (ONBOARDING)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.get("/api/user/profile", response_model=UserProfileResponse)
+@app.get("/api/user/profile")
 async def get_profile(username: str = Depends(_get_current_user)):
+    """
+    Return the user's onboarding profile.
+    Always returns 200 so the auth guard can distinguish auth failure (401)
+    from a genuine missing/incomplete profile (onboarding_complete=false).
+    """
     profile = db.get_user_profile(username)
     if not profile:
-        raise HTTPException(status_code=404, detail="Profile not set. Complete onboarding.")
+        # User exists and token is valid, but onboarding not yet complete.
+        return {"username": username, "onboarding_complete": False}
     try:
-        return UserProfileResponse(username=username, onboarding_complete=True, **profile)
+        return {"username": username, "onboarding_complete": True, **profile}
     except Exception:
-        # Profile exists but is missing required fields (e.g. saved with an older schema).
-        # Treat as incomplete — the frontend will prompt the user to redo onboarding.
-        raise HTTPException(status_code=404, detail="Profile incomplete. Complete onboarding.")
+        # Profile exists but is malformed (old schema) — treat as incomplete.
+        return {"username": username, "onboarding_complete": False}
 
 
 @app.post("/api/user/profile", response_model=UserProfileResponse)
@@ -399,7 +430,7 @@ async def set_voice(body: dict, username: str = Depends(_get_current_user)):
             status_code=400,
             detail=f"Invalid voice_id. Choose one of: {list(valid_ids)}",
         )
-    db.update_user_profile(username, {"friday_voice_id": voice_id})
+    db.set_user_voice(username, voice_id)
     voice_name = next((k for k, v in VOICES.items() if v == voice_id), voice_id)
     return {"status": "saved", "voice_id": voice_id, "voice_name": voice_name}
 
@@ -881,11 +912,10 @@ async def _handle_friday_message(
             print(f"[FridayWS] 🔊 Synthesising TTS for {len(response_text)}-char response …")
             await ws.send_json(speaking_indicator(True))
             t1 = time.monotonic()
-            # Resolve user's preferred voice (stored on profile, falls back to env default)
+            # Resolve user's preferred voice (stored as top-level field, separate from profile)
             user_voice_id = None
             try:
-                profile = db.get_user_profile(username)
-                user_voice_id = (profile or {}).get("friday_voice_id") or None
+                user_voice_id = db.get_user_voice(username) or None
             except Exception:
                 pass
             mp3 = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
@@ -912,8 +942,7 @@ async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
     try:
         user_voice_id = None
         try:
-            profile = db.get_user_profile(username)
-            user_voice_id = (profile or {}).get("friday_voice_id") or None
+            user_voice_id = db.get_user_voice(username) or None
         except Exception:
             pass
         await ws.send_json(speaking_indicator(True))

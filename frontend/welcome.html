@@ -291,7 +291,8 @@
     sessionStorage.removeItem('ac_is_new_user');   // consume immediately
 
     try {
-      const { username } = await apiFetch('/api/me');
+      const profile = await apiFetch('/api/user/profile');
+      const username = profile.username || Auth.username();
 
       // Mark this session so the tracker doesn't redirect back here
       sessionStorage.setItem('seen_welcome', '1');
@@ -317,8 +318,15 @@
         document.getElementById('cta-secondary').textContent = '🚀 Open Tracker';
       }
 
-    } catch (_) {
-      window.location.href = '/login';
+    } catch (err) {
+      if (err.message && err.message.includes('401')) {
+        window.location.href = '/login';
+      } else {
+        // Token valid but profile not set — show username from localStorage
+        sessionStorage.setItem('seen_welcome', '1');
+        const fallback = Auth.username();
+        document.querySelectorAll('[data-username]').forEach(el => { el.textContent = fallback; });
+      }
     }
   })();
   </script>

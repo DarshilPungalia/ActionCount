@@ -209,6 +209,7 @@ def create_user(username: str, hashed_password: str, email: Optional[str] = None
 
 
 def update_user_profile(username: str, profile: dict) -> bool:
+    """Overwrite the full onboarding profile dict."""
     result = _users().update_one(
         {"username": username},
         {"$set": {"profile": profile, "onboarding_complete": True}},
@@ -216,11 +217,42 @@ def update_user_profile(username: str, profile: dict) -> bool:
     return result.matched_count > 0
 
 
+def set_user_voice(username: str, voice_id: str) -> bool:
+    """
+    Persist the user's preferred Friday TTS voice WITHOUT touching the rest
+    of the profile.  Uses a dot-path $set so existing onboarding data is safe.
+    """
+    result = _users().update_one(
+        {"username": username},
+        {"$set": {"friday_voice_id": voice_id}},   # top-level field, not inside profile
+    )
+    return result.matched_count > 0
+
+
+def get_user_voice(username: str) -> Optional[str]:
+    """Return the stored Friday voice ID for a user, or None."""
+    doc = _users().find_one({"username": username}, {"_id": 0, "friday_voice_id": 1})
+    return (doc or {}).get("friday_voice_id")
+
+
 def get_user_profile(username: str) -> Optional[dict]:
     doc = _users().find_one({"username": username}, {"_id": 0, "profile": 1})
     if not doc:
         return None
-    return doc.get("profile")
+    profile = doc.get("profile")
+    if not profile or not isinstance(profile, dict):
+        return None
+    # A valid onboarding profile must have weight_kg.
+    # Documents that only contain friday_voice_id (or other non-onboarding keys)
+    # are NOT a complete profile — treat as not onboarded.
+    if "weight_kg" not in profile:
+        return None
+    # Back-fill optional fields that may be missing from older stored documents
+    # so the caller never sees KeyError / Pydantic validation failure.
+    profile.setdefault("goals_extra", None)
+    profile.setdefault("equipment_availability", [])
+    profile.setdefault("dietary_restrictions", [])
+    return profile
 
 
 # ── Workout operations ────────────────────────────────────────────────────────

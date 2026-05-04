@@ -22,7 +22,7 @@ async function loadHistory() {
   }
 }
 
-// ── Send message ──────────────────────────────────────────────────────────────
+// ── Send message (with workout plan detection) ────────────────────────────────
 async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text) return;
@@ -31,17 +31,15 @@ async function sendMessage() {
   const prompts = document.getElementById("suggestedPrompts");
   if (prompts) prompts.style.display = "none";
 
-  // Show user message
   appendBubble("user", text);
   inputEl.value = "";
   autoResize(inputEl);
-
-  // Disable input & show typing
   setLoading(true);
 
   try {
     const res = await Chat.send(text);
     appendBubble("assistant", res.reply);
+    _tryExtractWorkoutPlan(res.reply);
   } catch (err) {
     appendBubble("assistant", `⚠️ Error: ${err.message}`);
   } finally {
@@ -159,28 +157,6 @@ function _showPlanSaveBanner(plan) {
   scrollToBottom();
 }
 
-// ── Override sendMessage to detect plan JSON ──────────────────────────────────
-const _origSendMessage = sendMessage;
-// Wrap: after receiving reply, check if it's a plan
-async function sendMessage() {
-  const text = inputEl.value.trim();
-  if (!text) return;
-  const prompts = document.getElementById("suggestedPrompts");
-  if (prompts) prompts.style.display = "none";
-  appendBubble("user", text);
-  inputEl.value = "";
-  autoResize(inputEl);
-  setLoading(true);
-  try {
-    const res = await Chat.send(text);
-    appendBubble("assistant", res.reply);
-    _tryExtractWorkoutPlan(res.reply);
-  } catch (err) {
-    appendBubble("assistant", `⚠️ Error: ${err.message}`);
-  } finally {
-    setLoading(false);
-  }
-}
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadHistory().then(() => {

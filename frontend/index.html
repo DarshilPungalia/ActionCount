@@ -371,11 +371,26 @@
         return;
       }
       try {
-        await apiFetch('/api/user/profile');
+        const profile = await apiFetch('/api/user/profile');
         document.getElementById('nav-username').textContent = Auth.username();
+        // Init plan loader after auth — auto-loads today's plan if one exists
+        window.addEventListener('load', () => {
+          if (window.PlanLoader) PlanLoader.init();
+        });
+        // If onboarding not complete, the app.js / welcome flow will handle prompting
       } catch (err) {
-        clearToken();
-        window.location.href = '/login';
+        // Only clear token + redirect on auth failure (401).
+        // Profile-not-found (404) or network hiccups should not log the user out.
+        if (err.message && err.message.includes('401')) {
+          clearToken();
+          window.location.href = '/login';
+        } else {
+          // Token is valid but profile fetch had an unexpected error — stay on page
+          document.getElementById('nav-username').textContent = Auth.username();
+          window.addEventListener('load', () => {
+            if (window.PlanLoader) PlanLoader.init();
+          });
+        }
       }
     })();
   </script>
@@ -385,6 +400,8 @@
   <script src="/static/js/upload.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/js/tracker.js"></script>
+  <script src="/static/js/rest_timer.js"></script>
+  <script src="/static/js/plan_loader.js"></script>
 
   <!-- Nav slide-down on hover-zone -->
   <script>
