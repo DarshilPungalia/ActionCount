@@ -114,7 +114,13 @@ const Plan = {
   },
   /** Full Mon-Sun weekly schedule */
   async week() { return apiFetch('/api/plans/week'); },
+  /**
+   * Today's completion progress: {date, progress:{exercise_key: sets_done}, plan_complete}
+   * Used by PlanLoader to resume mid-workout sessions.
+   */
+  async progress() { return apiFetch('/api/plans/today/progress'); },
 };
+
 
 function requireAuth() {
   if (!Auth.isLoggedIn()) { window.location.href = "/login"; return false; }

@@ -642,6 +642,74 @@ async def get_today_plan(
     }
 
 
+@app.get("/api/plans/today/progress")
+async def get_today_plan_progress(
+    username: str = Depends(_get_current_user),
+):
+    """
+    Return how many sets of each plan exercise have been logged today.
+
+    Response: {
+        "date": "YYYY-MM-DD",
+        "progress": {"exercise_key": sets_done_int, ...},
+        "plan_complete": bool   # true if all planned sets are done
+    }
+
+    Uses the DISPLAY_NAME → exercise_key mapping so it matches what
+    tracker.js saves (display names) against what the plan stores (keys).
+    """
+    from datetime import date as _date  # noqa: PLC0415
+
+    today     = _date.today().isoformat()
+    weekday   = _DAY_NAMES[datetime.now().weekday()]
+    plan      = db.get_workout_plan(username, weekday)
+
+    if not plan or not plan.get("exercises"):
+        return {"date": today, "progress": {}, "plan_complete": False}
+
+    # Map display name → exercise_key (tracker.js saves display names)
+    _KEY_TO_DISPLAY = {
+        "squat":          "Squat",
+        "pushup":         "Push-Up",
+        "bicep_curl":     "Bicep Curl",
+        "pullup":         "Pull-Up",
+        "lateral_raise":  "Lateral Raise",
+        "overhead_press": "Overhead Press",
+        "situp":          "Sit-Up",
+        "crunch":         "Crunch",
+        "leg_raise":      "Leg Raise",
+        "knee_raise":     "Knee Raise",
+        "knee_press":     "Knee Press",
+    }
+
+    # Fetch today's workout log docs for this user
+    from backend.utils.db import _workouts  # noqa: PLC0415
+    today_docs = list(_workouts().find(
+        {"username": username, "date": today},
+        {"_id": 0, "exercise": 1, "sets": 1},
+    ))
+
+    # Build display_name → sets_done map
+    logged: dict[str, int] = {}
+    for doc in today_docs:
+        name = doc.get("exercise", "")
+        logged[name] = len(doc.get("sets", []))
+
+    # Cross-reference plan exercises
+    progress: dict[str, int] = {}
+    plan_complete = True
+    for ex in plan["exercises"]:
+        key     = ex["exercise_key"]
+        display = _KEY_TO_DISPLAY.get(key, key)
+        done    = logged.get(display, 0)
+        progress[key] = done
+        if done < (ex.get("sets") or 1):
+            plan_complete = False
+
+    return {"date": today, "progress": progress, "plan_complete": plan_complete}
+
+
+
 @app.get("/api/plans/week")
 async def get_week_plan(username: str = Depends(_get_current_user)):
     """Return the full Mon–Sun workout schedule."""

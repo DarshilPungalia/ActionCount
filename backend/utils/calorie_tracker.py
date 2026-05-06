@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-_MODEL          = "gemini-2.0-flash"
+_MODEL          = "gemini-2.5-flash"
 _TIMEOUT        = 20.0   # seconds; vision calls can be slower than text
 
 _SYSTEM_PROMPT = (
@@ -57,8 +57,8 @@ def scan_food_from_frame(frame_bgr, username: str) -> dict:
 
     raw = ""
     try:
-        from google import genai                          # noqa: PLC0415
-        from google.genai import types as genai_types    # noqa: PLC0415
+        from google import genai                          
+        from google.genai import types as genai_types    
 
         client = genai.Client(api_key=_GOOGLE_API_KEY)
 
@@ -97,7 +97,7 @@ def scan_food_from_frame(frame_bgr, username: str) -> dict:
 
     # ── Persist to MongoDB (best-effort) ──────────────────────────────────────
     try:
-        from backend.utils import db  # noqa: PLC0415
+        from backend.utils import db
 
         entry = {
             "timestamp":      datetime.utcnow().isoformat(),

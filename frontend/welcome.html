@@ -203,6 +203,61 @@
       color: #fff;
     }
 
+    /* ── Today's plan banner ────────────────────────────────────────────── */
+    #plan-today-banner {
+      display: none;
+      margin-top: 1.8rem;
+      width: min(520px, 100%);
+      background: linear-gradient(135deg, rgba(99,102,241,0.13), rgba(16,185,129,0.07));
+      border: 1px solid rgba(99,102,241,0.38);
+      border-radius: 16px;
+      padding: 1.2rem 1.4rem;
+      backdrop-filter: blur(14px);
+      text-align: left;
+      animation: fadeUp 0.55s ease-out 0.6s both;
+    }
+    #plan-today-banner .plan-tag {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: rgba(165,180,252,0.7);
+      margin-bottom: 0.3rem;
+    }
+    #plan-today-banner .plan-title {
+      font-size: 1rem;
+      font-weight: 700;
+      color: #fff;
+      margin-bottom: 0.3rem;
+    }
+    #plan-today-banner .plan-exercises {
+      font-size: 0.8rem;
+      color: rgba(148,163,184,0.8);
+      margin-bottom: 1rem;
+      line-height: 1.65;
+    }
+    .plan-start-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0.52rem 1.2rem;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(99,102,241,0.35);
+      transition: transform 0.15s, box-shadow 0.15s;
+      font-family: 'Inter', sans-serif;
+    }
+    .plan-start-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(99,102,241,0.5);
+    }
+
     /* ── Footer ──────────────────────────────────────────────────────────── */
     .footer {
       margin-top: 3rem;
@@ -271,6 +326,14 @@
     <a href="/dashboard" class="btn btn-ghost" id="cta-secondary">📊 Dashboard</a>
   </div>
 
+  <!-- Today's workout plan banner — shown by JS when plan exists -->
+  <div id="plan-today-banner">
+    <div class="plan-tag"></div>
+    <div class="plan-title"></div>
+    <div class="plan-exercises"></div>
+    <a href="/" class="plan-start-btn">🏋️&nbsp; Start Workout →</a>
+  </div>
+
   <p class="footer animate-in delay-4">
     ActionCount · RTMPose · FastAPI · WebRTC
   </p>
@@ -280,69 +343,79 @@
   (async function () {
     'use strict';
 
-    // Guard: must be logged in
-    if (!Auth.isLoggedIn()) {
-      window.location.href = '/login';
-      return;
-    }
+    if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
 
-    // Detect first-time user
     const isNew = sessionStorage.getItem('ac_is_new_user') === '1';
-    sessionStorage.removeItem('ac_is_new_user');   // consume immediately
+    sessionStorage.removeItem('ac_is_new_user');
+
+    const DISPLAY = {
+      squat:'Squat', pushup:'Push-up', bicep_curl:'Bicep Curl',
+      pullup:'Pull-up', lateral_raise:'Lateral Raise', overhead_press:'Overhead Press',
+      situp:'Sit-up', crunch:'Crunch', leg_raise:'Leg Raise',
+      knee_raise:'Knee Raise', knee_press:'Knee Press',
+    };
 
     try {
-      const profile = await apiFetch('/api/user/profile');
+      const profile  = await apiFetch('/api/user/profile');
       const username = profile.username || Auth.username();
-
-      // Mark this session so the tracker doesn't redirect back here
       sessionStorage.setItem('seen_welcome', '1');
 
-      // Fill all [data-username] slots
-      document.querySelectorAll('[data-username]').forEach(el => {
-        el.textContent = username;
-      });
+      document.querySelectorAll('[data-username]').forEach(el => { el.textContent = username; });
 
       if (isNew) {
-        // ── First-time greeting ───────────────────────────────────────────
         document.getElementById('greeting-sub').innerHTML =
           `You did it, <span data-username>${username}</span>! 🎉`;
         document.getElementById('greeting-main').innerHTML =
           `You're all set,&nbsp;<span style="background:linear-gradient(135deg,var(--cyan),var(--indigo));-webkit-background-clip:text;-webkit-text-fill-color:transparent;">${username}</span>!`;
         document.getElementById('greeting-tagline').textContent =
           'Your profile is saved. Time to crush your first workout. 💪';
-
-        // Replace CTA buttons
         document.getElementById('cta-primary').href        = '/plans';
         document.getElementById('cta-primary').textContent = '📅 Build My Plan';
         document.getElementById('cta-secondary').href      = '/';
         document.getElementById('cta-secondary').textContent = '🚀 Open Tracker';
       }
 
+      // ── Check for today's active workout plan ─────────────────────────────
+      try {
+        const planData = await Plan.today();
+        if (planData.has_plan && planData.exercises && planData.exercises.length > 0) {
+          const banner = document.getElementById('plan-today-banner');
+          const exerciseLines = planData.exercises.map(ex => {
+            const label = DISPLAY[ex.exercise_key] || ex.exercise_key;
+            const wt    = (ex.weight_kg > 0) ? ` · ${ex.weight_kg} kg` : '';
+            return `${ex.sets}×${ex.reps} ${label}${wt}`;
+          }).join('  •  ');
+
+          banner.querySelector('.plan-tag').textContent      = `${planData.weekday} Workout`;
+          banner.querySelector('.plan-title').textContent    = 'You have a workout today! 💪';
+          banner.querySelector('.plan-exercises').textContent = exerciseLines;
+          banner.style.display = 'block';
+        }
+      } catch (_) { /* no plan or network error — silent */ }
+
     } catch (err) {
       if (err.message && err.message.includes('401')) {
         window.location.href = '/login';
       } else {
-        // Token valid but profile not set — show username from localStorage
         sessionStorage.setItem('seen_welcome', '1');
-        const fallback = Auth.username();
-        document.querySelectorAll('[data-username]').forEach(el => { el.textContent = fallback; });
+        document.querySelectorAll('[data-username]').forEach(el => {
+          el.textContent = Auth.username();
+        });
       }
     }
   })();
   </script>
 
   <script>
-  // Open Friday WebSocket in TEXT mode — voice activates only on the tracker
+  // Friday WebSocket in TEXT mode — voice activates only on the tracker
   (function openFridayText() {
     const token = localStorage.getItem('access_token') || localStorage.getItem('ac_token');
     if (!token) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}`);
-    ws.onopen = function () {
-      ws.send(JSON.stringify({ type: 'set_channel', data: { channel: 'text' } }));
-    };
-    ws.onclose = function () { setTimeout(openFridayText, 3000); };
-    ws.onerror = function () { ws.close(); };
+    ws.onopen  = () => ws.send(JSON.stringify({ type: 'set_channel', data: { channel: 'text' } }));
+    ws.onclose = () => setTimeout(openFridayText, 3000);
+    ws.onerror = () => ws.close();
   })();
   </script>
 

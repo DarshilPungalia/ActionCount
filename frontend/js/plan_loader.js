@@ -93,7 +93,9 @@ const PlanLoader = (() => {
 
     const wEl = document.getElementById('weight-input');
     if (wEl && !_weightManuallyChanged) {
-      wEl.value = item.weightKg > 0 ? item.weightKg : '';
+      // Show 0 explicitly (not blank) so user sees the plan's target weight
+      wEl.value = item.weightKg >= 0 ? item.weightKg : '';
+      wEl.dispatchEvent(new Event('input'));
     }
 
     _renderBanner();
@@ -101,10 +103,12 @@ const PlanLoader = (() => {
 
   // ── Auto-start camera ────────────────────────────────────────────────────────
   function _autoStart() {
+    // 800ms: gives live.js time to wire up the exercise-change handler
+    // after _applyCurrentItem() dispatches the 'change' event on the select
     setTimeout(() => {
       const startBtn = document.getElementById('btn-start-camera');
       if (startBtn && !startBtn.disabled) startBtn.click();
-    }, 400);
+    }, 800);
   }
 
   // ── Reset per-set state ──────────────────────────────────────────────────────
@@ -342,12 +346,16 @@ const PlanLoader = (() => {
     _watchWeightInput();
     _monitorCameraStop();
 
-    let data;
+    // Fetch plan + today's progress in parallel
+    let data, progressData;
     try {
-      data = await Plan.today();
+      [data, progressData] = await Promise.all([
+        Plan.today(),
+        Plan.progress().catch(() => ({ progress: {} })),  // non-fatal
+      ]);
     } catch (err) {
       console.info('[PlanLoader] No plan for today (or fetch failed):', err.message);
-      return;
+      return;   // manual mode
     }
 
     if (!data.has_plan || !data.exercises || data.exercises.length === 0) {
@@ -355,17 +363,56 @@ const PlanLoader = (() => {
       return;
     }
 
-    _weekday    = data.weekday;
+    _weekday = data.weekday;
     _buildQueue(data.exercises);
-    _currentIdx = 0;
-    _active     = true;
+    _active  = true;
     _resetSetState();
 
-    console.info(`[PlanLoader] Loaded ${_weekday} plan: ${_queue.length} sets across ${data.exercises.length} exercises.`);
+    // ── Resume: skip already-completed sets ───────────────────────────────────
+    // progressData.progress = {exercise_key: sets_done_today}
+    const done = (progressData && progressData.progress) || {};
+
+    // Count total planned sets per exercise_key so we know when to skip
+    const plannedSets = {};
+    data.exercises.forEach(ex => { plannedSets[ex.exercise_key] = ex.sets || 1; });
+
+    // Walk the queue and find the first set that hasn't been saved yet
+    _currentIdx = 0;
+    for (let i = 0; i < _queue.length; i++) {
+      const item    = _queue[i];
+      const key     = item.exercise_key;
+      const setsDone = done[key] || 0;
+      // setIndex is 1-based; if setsDone >= setIndex, this set is already done
+      if (setsDone >= item.setIndex) {
+        _currentIdx = i + 1;   // skip past this set
+      } else {
+        break;   // first incomplete set found
+      }
+    }
+
+    if (_currentIdx >= _queue.length) {
+      // All sets already completed for today
+      console.info('[PlanLoader] Workout already complete for today — showing summary.');
+      _renderBanner();   // shows "Workout Complete!"
+      if (window.showToast) window.showToast('✅ Today\'s workout is already complete!');
+      return;
+    }
+
+    if (_currentIdx > 0) {
+      const resumeItem = _queue[_currentIdx];
+      console.info(
+        `[PlanLoader] Resuming ${_weekday} plan from Exercise ${resumeItem.exerciseIndex}` +
+        ` "${resumeItem.exerciseLabel}" Set ${resumeItem.setIndex}/${resumeItem.totalSets}` +
+        ` (${_currentIdx} sets already done today)`
+      );
+    } else {
+      console.info(`[PlanLoader] Loaded ${_weekday} plan: ${_queue.length} sets across ${data.exercises.length} exercises.`);
+    }
 
     _applyCurrentItem();
     _autoStart();
   }
+
 
   // ── Public: getCurrentItem ───────────────────────────────────────────────────
   function getCurrentItem() {

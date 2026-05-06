@@ -374,26 +374,32 @@
       try {
         const profile = await apiFetch('/api/user/profile');
         document.getElementById('nav-username').textContent = Auth.username();
-        // Init plan loader after auth — auto-loads today's plan if one exists
-        window.addEventListener('load', () => {
-          if (window.PlanLoader) PlanLoader.init();
-        });
-        // If onboarding not complete, the app.js / welcome flow will handle prompting
       } catch (err) {
-        // Only clear token + redirect on auth failure (401).
-        // Profile-not-found (404) or network hiccups should not log the user out.
         if (err.message && err.message.includes('401')) {
           clearToken();
           window.location.href = '/login';
-        } else {
-          // Token is valid but profile fetch had an unexpected error — stay on page
-          document.getElementById('nav-username').textContent = Auth.username();
-          window.addEventListener('load', () => {
-            if (window.PlanLoader) PlanLoader.init();
-          });
+          return;
         }
+        // Token valid but profile fetch had a non-auth error — stay on page
+        document.getElementById('nav-username').textContent = Auth.username();
       }
+      // Always init PlanLoader after auth succeeds (plan auto-loads if available,
+      // falls back to manual mode if not). Safe to call after scripts are parsed.
+      _initPlanLoader();
     })();
+
+    // Deferred init: if scripts haven't fully loaded yet wait for DOMContentLoaded,
+    // otherwise call immediately (auth guard is async so scripts are usually ready).
+    function _initPlanLoader() {
+      if (typeof PlanLoader !== 'undefined') {
+        PlanLoader.init();
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (typeof PlanLoader !== 'undefined') PlanLoader.init();
+        });
+      }
+    }
+
   </script>
   <script src="/static/js/constants.js"></script>
   <script src="/static/js/session.js"></script>
