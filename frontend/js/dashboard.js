@@ -10,12 +10,34 @@ let caloriesTotalMonth = 0;
 let currentDate    = new Date();
 let radarChart     = null;
 let volumeChart    = null;
+let _svgText       = null;   // cached SVG markup
+let _pathsMap      = null;   // cached paths.json {pathId: muscleName}
 
+// ── Colour palette ─────────────────────────────────────────────────────────────
+// Broad-group colours (radar + stat bars)
 const MUSCLE_COLORS = {
   Arms:"#6366f1", Chest:"#ef4444", Back:"#f59e0b",
   Legs:"#10b981", Shoulders:"#3b82f6", Core:"#8b5cf6",
 };
 const MUSCLE_ORDER = ["Arms","Chest","Back","Legs","Shoulders","Core"];
+
+// Fine-grained colours for the SVG heatmap paths
+const FINE_MUSCLE_COLORS = {
+  Bicep:     "#6366f1",  // indigo
+  Triceps:   "#8b5cf6",  // violet
+  Forearms:  "#a78bfa",  // light purple
+  Chest:     "#ef4444",  // red
+  Delts:     "#3b82f6",  // blue
+  Lats:      "#f59e0b",  // amber
+  Traps:     "#f97316",  // orange
+  Rhomboids: "#fb923c",  // light orange
+  Core:      "#8b5cf6",  // violet
+  Quads:     "#10b981",  // emerald
+  Hamstrings:"#059669",  // dark emerald
+  Calfs:     "#34d399",  // light green
+  Glutes:    "#06b6d4",  // cyan
+  Adductors: "#0ea5e9",  // sky blue
+};
 
 const EXERCISE_MUSCLE_MAP = {
   "Bicep Curl":"Arms","Push-Up":"Chest","Push Up":"Chest",
@@ -30,12 +52,15 @@ async function loadAll() {
   const prevDt = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
   const prevYm = fmtYearMonth(prevDt);
   try {
-    const [histRes, statsRes, prevStatsRes, volRes, calRes] = await Promise.all([
+    const [histRes, statsRes, prevStatsRes, volRes, calRes, svgRes, pathsRes] = await Promise.all([
       Workout.history(),
       Workout.stats(ym),
       Workout.stats(prevYm),
       Workout.volume(ym),
       Workout.calories(ym),
+      // Fetch SVG and paths.json only once (cached after first load)
+      _svgText  ? Promise.resolve({text:_svgText})  : fetch('/static/img/muscle_map.svg').then(r=>r.text()).then(t=>({text:t})),
+      _pathsMap ? Promise.resolve({map:_pathsMap})  : fetch('/static/data/paths.json').then(r=>r.json()).then(m=>({map:m})),
     ]);
     workoutHistory = {};
     (histRes.history || []).forEach(d => { workoutHistory[d.date] = d.exercises; });
@@ -46,6 +71,10 @@ async function loadAll() {
     volumeData = {};
     (volRes.volumes || []).forEach(v => { volumeData[v.exercise] = v.total_volume_kg; });
     caloriesTotalMonth = calRes.total_calories || 0;
+
+    // Cache SVG and paths
+    if (!_svgText)  _svgText  = svgRes.text || svgRes;
+    if (!_pathsMap) _pathsMap = pathsRes.map || pathsRes;
 
     renderCalendar();
     renderMuscleStats();
@@ -183,56 +212,99 @@ function renderRadar() {
 
 // ── SVG Muscle Heatmap ────────────────────────────────────────────────────────
 function renderHeatmap() {
-  const container=document.getElementById("muscleHeatmap");
-  if(!container) return;
-  const maxSets=Math.max(...MUSCLE_ORDER.map(g=>muscleStats[g]||0),1);
-  function col(muscle){
-    const v=muscleStats[muscle]||0;
-    if(!v) return "rgba(255,255,255,0.06)";
-    const alpha=(0.25+0.65*(v/maxSets)).toFixed(2);
-    const hex=MUSCLE_COLORS[muscle]||"#6366f1";
-    const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
-    return `rgba(${r},${g},${b},${alpha})`;
+  const container = document.getElementById("muscleHeatmap");
+  if (!container) return;
+
+  // ── Fallback: if SVG/paths haven't loaded yet, show placeholder ──
+  if (!_svgText || !_pathsMap) {
+    container.innerHTML = `<div style="color:#4b5563;font-size:0.8rem;text-align:center;padding:20px;">Loading heatmap…</div>`;
+    return;
   }
-  const arms=col("Arms"),chest=col("Chest"),back=col("Back"),legs=col("Legs"),shold=col("Shoulders"),core=col("Core");
-  container.innerHTML=`
-<div style="display:flex;justify-content:center;gap:20px;">
-<div style="text-align:center;"><div style="font-size:0.6rem;color:#4b5563;margin-bottom:4px;letter-spacing:.08em;">FRONT</div>
-<svg viewBox="0 0 120 260" width="90" height="200" xmlns="http://www.w3.org/2000/svg">
-  <ellipse cx="60" cy="22" rx="16" ry="19" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-  <ellipse cx="30" cy="58" rx="16" ry="10" fill="${shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <ellipse cx="90" cy="58" rx="16" ry="10" fill="${shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="38" y="48" width="44" height="38" rx="6" fill="${chest}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="40" y="88" width="40" height="44" rx="5" fill="${core}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="13" y="55" width="15" height="42" rx="7" fill="${arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="92" y="55" width="15" height="42" rx="7" fill="${arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="10" y="99" width="13" height="36" rx="6" fill="${arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
-  <rect x="97" y="99" width="13" height="36" rx="6" fill="${arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
-  <rect x="40" y="134" width="17" height="58" rx="8" fill="${legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="63" y="134" width="17" height="58" rx="8" fill="${legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="41" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
-  <rect x="65" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
-</svg></div>
-<div style="text-align:center;"><div style="font-size:0.6rem;color:#4b5563;margin-bottom:4px;letter-spacing:.08em;">BACK</div>
-<svg viewBox="0 0 120 260" width="90" height="200" xmlns="http://www.w3.org/2000/svg">
-  <ellipse cx="60" cy="22" rx="16" ry="19" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.15)" stroke-width="1"/>
-  <ellipse cx="30" cy="58" rx="16" ry="10" fill="${shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <ellipse cx="90" cy="58" rx="16" ry="10" fill="${shold}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="34" y="48" width="52" height="50" rx="6" fill="${back}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="40" y="98" width="40" height="34" rx="5" fill="${back}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="13" y="55" width="15" height="42" rx="7" fill="${arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="92" y="55" width="15" height="42" rx="7" fill="${arms}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="10" y="99" width="13" height="36" rx="6" fill="${arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
-  <rect x="97" y="99" width="13" height="36" rx="6" fill="${arms}" stroke="rgba(255,255,255,0.10)" stroke-width="1"/>
-  <rect x="40" y="134" width="17" height="58" rx="8" fill="${legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="63" y="134" width="17" height="58" rx="8" fill="${legs}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
-  <rect x="41" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
-  <rect x="65" y="194" width="14" height="46" rx="7" fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>
-</svg></div></div>
-<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:8px;">
-${MUSCLE_ORDER.map(g=>`<span style="font-size:0.68rem;color:#9ca3af;display:flex;align-items:center;gap:3px;"><span style="width:7px;height:7px;border-radius:50%;background:${MUSCLE_COLORS[g]};display:inline-block;"></span>${g}: ${muscleStats[g]||0}</span>`).join("")}
-</div>`;
+
+  // ── Compute max sets across all fine-grained muscles ──
+  const fineGroups = Object.keys(FINE_MUSCLE_COLORS);
+  const maxSets = Math.max(...fineGroups.map(g => muscleStats[g] || 0), 1);
+
+  // ── Inject SVG inline ──
+  // Wrap in a positioned div so we can add the legend below
+  container.innerHTML = `
+    <div id="svgWrap" style="width:100%;overflow:hidden;border-radius:10px;"></div>
+    <div id="heatLegend" style="display:flex;flex-wrap:wrap;gap:5px 10px;justify-content:center;margin-top:10px;"></div>`;
+
+  const svgWrap = document.getElementById("svgWrap");
+  svgWrap.innerHTML = _svgText;
+  const svgEl = svgWrap.querySelector("svg");
+  if (!svgEl) return;
+
+  // Make SVG responsive and transparent
+  svgEl.setAttribute("width", "100%");
+  svgEl.removeAttribute("height");
+  svgEl.style.display = "block";
+  svgEl.style.background = "transparent";
+  // Ensure no white page background rectangle
+  svgEl.setAttribute("style", "background:transparent;display:block;");
+
+  // ── Color each mapped path ──
+  const REST_COLOR = "rgba(255,255,255,0.07)";  // dim glass look for unused muscles
+
+  // First: set all named paths (those in paths.json) to rest color,
+  //        and override any white near-white fills on non-mapped paths too
+  svgEl.querySelectorAll("path").forEach(path => {
+    const fill = path.getAttribute("fill") || "";
+    // White/near-white fills are the background silhouette — make transparent
+    if (/^#F[EF][EF][A-F0-9]{2}$/i.test(fill) || fill === "none" || fill === "") {
+      path.style.fill = "transparent";
+    }
+  });
+
+  // Then: apply fine-grained muscle colors
+  Object.entries(_pathsMap).forEach(([pathId, muscleName]) => {
+    const el = svgEl.getElementById(pathId);
+    if (!el) return;
+    const sets  = muscleStats[muscleName] || 0;
+    const color = FINE_MUSCLE_COLORS[muscleName];
+    if (!color) { el.style.fill = REST_COLOR; return; }
+    if (sets === 0) {
+      el.style.fill = REST_COLOR;
+    } else {
+      const alpha = (0.25 + 0.70 * (sets / maxSets)).toFixed(2);
+      const r = parseInt(color.slice(1,3),16);
+      const g = parseInt(color.slice(3,5),16);
+      const b = parseInt(color.slice(5,7),16);
+      el.style.fill = `rgba(${r},${g},${b},${alpha})`;
+    }
+    // Subtle stroke for definition
+    el.style.stroke = "rgba(255,255,255,0.08)";
+    el.style.strokeWidth = "0.5";
+    // Tooltip on hover
+    el.style.cursor = sets > 0 ? "pointer" : "default";
+    el.setAttribute("title", `${muscleName}: ${sets} set${sets!==1?"s":""}`);
+    if (sets > 0) {
+      el.addEventListener("mouseenter", function() {
+        this.style.filter = "brightness(1.4) drop-shadow(0 0 4px currentColor)";
+      });
+      el.addEventListener("mouseleave", function() {
+        this.style.filter = "";
+      });
+    }
+  });
+
+  // ── Legend: only muscles with activity ──
+  const legend = document.getElementById("heatLegend");
+  const active = fineGroups.filter(g => (muscleStats[g] || 0) > 0);
+  if (active.length === 0) {
+    legend.innerHTML = `<span style="font-size:0.7rem;color:#4b5563;">No workouts this month</span>`;
+  } else {
+    legend.innerHTML = active.map(g => {
+      const c = FINE_MUSCLE_COLORS[g] || "#6366f1";
+      return `<span style="font-size:0.68rem;color:#9ca3af;display:flex;align-items:center;gap:3px;">
+        <span style="width:7px;height:7px;border-radius:50%;background:${c};display:inline-block;"></span>
+        ${g}: ${muscleStats[g]||0}
+      </span>`;
+    }).join("");
+  }
 }
+
 
 // ── Volume bar chart ──────────────────────────────────────────────────────────
 function renderVolumeChart() {

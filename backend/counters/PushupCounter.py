@@ -9,7 +9,7 @@ Posture checks (priority order):
   3. Head dropping   — nose_y well below shoulder_y
   4. Elbows flaring  — large lateral Δx(elbow, shoulder)
   5. Incomplete depth — elbow angle never < 90° at bottom
-  6. Using momentum  — high shoulder velocity
+  6. Using momentum  — high shoulder velocity  (lowest priority)
   7. Uneven push     — left/right shoulder height mismatch
 
 COCO-17:  Arms: shoulder 5/6, elbow 7/8, wrist 9/10
@@ -30,7 +30,7 @@ class PushupCounter(BaseCounter):
     _HEAD_THRESH     = 40    # px: nose much lower (larger y) than shoulder
     _FLARE_THRESH    = 40    # px: elbow lateral offset from shoulder
     _DEPTH_THRESH    = 90    # °: elbow must reach this at bottom
-    _MOMENTUM_THRESH = 200   # px/s: shoulder velocity
+    _MOMENTUM_THRESH = 320   # px/s: shoulder velocity (raised — lower priority)
     _UNEVEN_THRESH   = 20    # px: shoulder height difference
 
     def _compute(self, frame: np.ndarray, landmarks_list: list) -> tuple:

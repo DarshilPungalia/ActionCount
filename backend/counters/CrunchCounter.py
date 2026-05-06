@@ -6,7 +6,7 @@ Counts crunch reps using shoulder-hip-ankle angle (bilateral, inverted).
 Posture checks (priority order):
   1. Lower back lifting  — sudden upward hip movement (Δy)
   2. Excessive neck flex — angle(nose, shoulder, hip) too acute
-  3. Using momentum      — high shoulder velocity
+  3. Using momentum      — high shoulder velocity  (lowest priority)
   4. Incomplete lift     — insufficient angle reduction at top
 
 COCO-17:  Left: shoulder=5, hip=11, ankle=15
@@ -24,7 +24,7 @@ class CrunchCounter(BaseCounter):
     DOWN_ANGLE = 170
 
     _NECK_FLEX_THRESH   = 120   # °: angle(nose, shoulder, hip) below this = neck pull
-    _MOMENTUM_THRESH    = 150   # px/s: shoulder upward speed
+    _MOMENTUM_THRESH    = 250   # px/s: shoulder upward speed (raised — lower priority)
     _BACK_LIFT_THRESH   = 15    # px: hip y decrease vs previous window frame
     _INCOMPLETE_THRESH  = 155   # °: angle must drop below UP_ANGLE significantly
 
@@ -76,16 +76,16 @@ class CrunchCounter(BaseCounter):
             if neck_ang is not None and neck_ang < self._NECK_FLEX_THRESH:
                 return "neck_pull", "Keep neck neutral, avoid pulling head"
 
-        # 3. Using momentum — high shoulder velocity
-        if self.calc_velocity(5) > self._MOMENTUM_THRESH:
-            return "momentum", "Lift slowly using abs"
-
-        # 4. Incomplete lift — shoulder angle not reducing enough
+        # 3+4. Incomplete lift checked before momentum (structural > speed)
         if self.stage == "up":
             l_raw = self.pose_detector.findAngle(frame, 5, 11, 15, lm, draw=False)
             r_raw = self.pose_detector.findAngle(frame, 6, 12, 16, lm, draw=False)
             for ang in (l_raw, r_raw):
                 if ang is not None and ang > self._INCOMPLETE_THRESH:
                     return "incomplete_lift", "Lift upper body fully"
+
+        # 3. Using momentum — lowest priority
+        if self.calc_velocity(5) > self._MOMENTUM_THRESH:
+            return "momentum", "Lift slowly using abs"
 
         return None, None

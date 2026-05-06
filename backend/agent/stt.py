@@ -128,8 +128,18 @@ class FridaySTT:
             use_safetensors=True,
         )
         model.to(device)
+
+        # Force English-only decoding: clear any cached forced_decoder_ids
+        # so that our per-call generate_kwargs (language+task) take full effect
+        # without the SuppressTokensLogitsProcessor conflict.
+        model.generation_config.forced_decoder_ids = None
+        model.generation_config.language = "english"
+        model.generation_config.task = "transcribe"
+
         processor = AutoProcessor.from_pretrained(model_id)
 
+        # NOTE: do NOT pass generate_kwargs here — set them per-call in _transcribe
+        # to avoid the duplicate SuppressTokensLogitsProcessor warning.
         self._whisper_pipe = pipeline(
             "automatic-speech-recognition",
             model=model,
@@ -137,7 +147,6 @@ class FridaySTT:
             feature_extractor=processor.feature_extractor,
             torch_dtype=torch_dtype,
             device=device,
-            generate_kwargs={"language": "english", "task": "transcribe"},
         )
         print(f"{_TAG} Whisper loaded on {device} — forced language: English.")
 

@@ -14,16 +14,27 @@ function authHeaders(extra = {}) {
     : { "Content-Type": "application/json", ...extra };
 }
 
-async function apiFetch(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...options, headers: { ...authHeaders(), ...(options.headers || {}) },
-  });
-  if (!res.ok) {
-    let detail = `HTTP ${res.status}`;
-    try { const json = await res.json(); detail = json.detail || detail; } catch (_) {}
-    throw new Error(detail);
+async function apiFetch(path, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: { ...authHeaders(), ...(options.headers || {}) },
+    });
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { const json = await res.json(); detail = json.detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    return res.json();
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error('Request timed out — please try again.');
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
 }
 
 const Auth = {
@@ -90,9 +101,9 @@ const Metrics = {
 };
 
 const Chat = {
-  async send(message)  { return apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ message }) }); },
-  async history()      { return apiFetch("/api/chat/history"); },
-  async clear()        { return apiFetch("/api/chat", { method: "DELETE" }); },
+  async send(message)  { return apiFetch("/api/chat", { method: "POST", body: JSON.stringify({ message }) }, 60000); },
+  async history()      { return apiFetch("/api/chat/history", {}, 15000); },
+  async clear()        { return apiFetch("/api/chat", { method: "DELETE" }, 15000); },
 };
 
 const Plan = {

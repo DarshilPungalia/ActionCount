@@ -7,7 +7,7 @@ Posture checks (priority order):
   1. Leaning back / swinging   — large Δx(shoulder, hip) → safety
   2. Elbows flaring outward    — |Δx(elbow, shoulder)| > threshold
   3. Elbows moving forward     — Δx(elbow, shoulder) increases vs prev frame
-  4. Using momentum            — high wrist velocity spike
+  4. Using momentum            — high wrist velocity spike  (lowest priority)
   5. Incomplete extension      — arm angle < 150° at bottom
   6. Uneven reps               — |left_angle - right_angle| > 25°
 
@@ -28,7 +28,7 @@ class BicepCurlCounter(BaseCounter):
     # Posture thresholds
     _LEAN_THRESH      = 30   # px: large shoulder-hip Δx = leaning
     _FLARE_THRESH     = 35   # px: elbow significantly outside shoulder
-    _MOMENTUM_THRESH  = 180  # px/s: high wrist velocity = using momentum
+    _MOMENTUM_THRESH  = 280  # px/s: high wrist velocity = using momentum (raised — lower priority)
     _EXTEND_THRESH    = 150  # °: arm must reach this at bottom
     _ASYMMETRY_THRESH = 25   # °: difference between arms
 
@@ -96,10 +96,8 @@ class BicepCurlCounter(BaseCounter):
             if abs(l_fwd) > self._FLARE_THRESH or abs(r_fwd) > self._FLARE_THRESH:
                 return "elbows_forward", "Keep elbows fixed close to torso"
 
-        # 4. Using momentum — high wrist velocity
+        # 4. Using momentum — high wrist velocity (lowest priority)
         wrist_vel = self.calc_velocity(9)
-        if wrist_vel > self._MOMENTUM_THRESH:
-            return "momentum", "Slow down, use controlled movement"
 
         # 5. Incomplete extension — check at bottom of curl
         if (self.left_stage == "down" or self.right_stage == "down"):
@@ -116,5 +114,9 @@ class BicepCurlCounter(BaseCounter):
         if l_raw is not None and r_raw is not None:
             if abs(l_raw - r_raw) > self._ASYMMETRY_THRESH:
                 return "uneven_reps", "Maintain symmetry between arms"
+
+        # Momentum — checked last so structural errors take priority
+        if wrist_vel > self._MOMENTUM_THRESH:
+            return "momentum", "Slow down, use controlled movement"
 
         return None, None

@@ -37,6 +37,13 @@ GET  /login                     → frontend/login.html
 GET  /dashboard                 → frontend/dashboard.html
 GET  /chatbot                   → frontend/chatbot.html
 GET  /plans                     → frontend/plans.html
+GET  /calorie                   → frontend/calorie.html
+
+Calorie Scanner
+---------------
+POST /api/calorie/scan          → base64 JPEG → Gemini Vision → {foods, total_calories, …}
+GET  /api/users/{u}/calories/today    → today's running total
+GET  /api/users/{u}/calories/history  → paginated scan history
 """
 
 from __future__ import annotations
@@ -206,14 +213,33 @@ def _ensure_stt_running() -> None:
 
     def _on_transcript(transcript: str):
         print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 dispatching to agent for all voice users")
-        for username, ws in list(_friday_ws_connections.items()):
-            channel = _get_user_channel(username)
-            if channel != "voice":
-                continue
-            frame = next(iter(_active_frames.values()), None) if _active_frames else None
-            print(f"[FridayWS] Invoking agent for {username!r} | frame={'yes' if frame else 'none'}")
+
+        # Fast-path: voice-triggered calorie snapshot
+        _t_lower = transcript.lower()
+        _snapshot_phrases = ("take snapshot", "scan food", "scan my food",
+                             "scan this", "take a snapshot", "calorie scan")
+        if any(p in _t_lower for p in _snapshot_phrases):
             asyncio.run_coroutine_threadsafe(
-                _handle_friday_message(ws, username, transcript, channel, frame),
+                _broadcast_friday_async({"type": "frontend_command",
+                                         "data": {"command": "calorie_snapshot"}}),
+                _loop,
+            )
+
+        _voice_users = [
+            (uname, ws)
+            for uname, ws in list(_friday_ws_connections.items())
+            if _get_user_channel(uname) == "voice"
+        ]
+        if not _voice_users:
+            print(f"[FridayWS] ⚠  No voice-channel users connected — transcript dropped.")
+            print(f"[FridayWS]    Connected users: {list(_friday_ws_connections.keys())}")
+            print(f"[FridayWS]    Channels: {dict(_friday_channels)}")
+
+        for uname, ws in _voice_users:
+            frame = next(iter(_active_frames.values()), None) if _active_frames else None
+            print(f"[FridayWS] Invoking agent for {uname!r} | frame={'yes' if frame else 'none'}")
+            asyncio.run_coroutine_threadsafe(
+                _handle_friday_message(ws, uname, transcript, "voice", frame),
                 _loop,
             )
 
@@ -310,6 +336,13 @@ async def serve_welcome():
 async def serve_plans():
     """Serve the Workout Plans page."""
     p = FRONTEND_DIR / "plans.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/calorie", response_class=HTMLResponse)
+async def serve_calorie():
+    """Serve the standalone Calorie Scanner page."""
+    p = FRONTEND_DIR / "calorie.html"
     return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
 
 
@@ -957,11 +990,16 @@ async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
 # ── /ws/friday WebSocket ──────────────────────────────────────────────────────
 
 @app.websocket("/ws/friday")
-async def ws_friday(websocket: WebSocket, token: Optional[str] = None):
+async def ws_friday(
+    websocket: WebSocket,
+    token: Optional[str] = None,
+    channel: Optional[str] = None,
+):
     """
     Friday push channel.
-    Auth: ?token=<jwt>  (query param, since WS headers are browser-limited)
-    Channel is managed by the client via {type: set_channel, data: {channel: voice|text}} messages.
+    Auth:    ?token=<jwt>   (query param, since WS headers are browser-limited)
+    Channel: ?channel=voice (optional; defaults to 'voice' — tracker always uses voice)
+    Channel can also be changed at runtime via {type: set_channel, data: {channel: voice|text}}.
     """
     # Authenticate
     if not token:
@@ -978,7 +1016,14 @@ async def ws_friday(websocket: WebSocket, token: Optional[str] = None):
 
     await websocket.accept()
     _friday_ws_connections[username] = websocket
-    _friday_channels[username]       = "text"   # default channel
+    # Pre-apply channel from query param — the tracker sends set_channel:voice on onopen,
+    # but that message only arrives after receive_text() starts.  Setting it here avoids
+    # the race where a transcript fires before the channel is switched.
+    _initial_channel = channel if channel in ("text", "voice") else "voice"
+    _friday_channels[username] = _initial_channel
+    print(f"[FridayWS] {username!r} connected — initial channel={_initial_channel!r}")
+    if _initial_channel == "voice":
+        _ensure_stt_running()
 
     # Startup greeting
     try:
@@ -1039,6 +1084,45 @@ async def ws_friday(websocket: WebSocket, token: Optional[str] = None):
     finally:
         _friday_ws_connections.pop(username, None)
         _friday_channels.pop(username, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CALORIE SCANNER — REST endpoint (used by calorie.html)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class CalorieScanRequest(BaseModel):
+    image_b64: str
+
+
+@app.post("/api/calorie/scan")
+async def calorie_scan(
+    body: CalorieScanRequest,
+    username: str = Depends(_get_current_user),
+):
+    """
+    Accept a base64-encoded JPEG, run Gemini/Azure Vision, return
+    {foods, total_calories, confidence, notes} and persist to DB.
+    """
+    import base64 as _b64
+    import numpy as _np
+    from backend.utils.calorie_tracker import scan_food_from_frame  # noqa: PLC0415
+
+    try:
+        raw = _b64.b64decode(body.image_b64)
+        arr = _np.frombuffer(raw, dtype=_np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}")
+
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Could not decode image")
+
+    result = await asyncio.to_thread(scan_food_from_frame, frame, username)
+
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result.get("message", "Scan failed"))
+
+    return result
 
 
 # ── Calorie History API ───────────────────────────────────────────────────────

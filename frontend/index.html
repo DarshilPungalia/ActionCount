@@ -40,6 +40,7 @@
         <a href="/chatbot"   class="nav-pill">AI Coach</a>
         <a href="/plans"     class="nav-pill">Plans</a>
         <a href="/metrics"   class="nav-pill">Metrics</a>
+        <a href="/calorie"   class="nav-pill" id="nav-calorie-btn" style="background:rgba(99,102,241,0.14);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;">🍎 Calorie Scan</a>
         <span id="nav-username" class="nav-user"></span>
         <button onclick="Auth.logout()" class="nav-logout">Logout</button>
       </div>
@@ -491,6 +492,13 @@
           break;
         }
 
+        case 'calorie_snapshot':
+        case 'open_calorie': {
+          // Voice command: navigate to calorie scanner page
+          window.location.href = '/calorie';
+          break;
+        }
+
         default:
           console.log('[Friday] unhandled command:', cmd);
       }
@@ -579,7 +587,7 @@
       const token = localStorage.getItem('access_token') || localStorage.getItem('ac_token');
       if (!token) return;
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      _fridayWs = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}`);
+      _fridayWs = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}&channel=voice`);
 
       _fridayWs.onopen = function () {
         // Tracker page always starts in voice mode immediately

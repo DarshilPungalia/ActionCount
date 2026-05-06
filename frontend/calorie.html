@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="ActionCount Calorie Scanner — AI-powered food recognition. Hold food to camera and snap." />
+  <title>ActionCount — Calorie Scanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/styles.css" />
+
+  <style>
+    /* ── Calorie Scanner Page Overrides ─────────────────────────────── */
+    body { overflow: hidden; background: #050810; }
+
+    /* Full-screen camera */
+    #cal-camera-wrap {
+      position: fixed; inset: 0;
+      background: #000;
+    }
+    #cal-video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    /* Food frame guide overlay */
+    #food-guide {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none; z-index: 10;
+    }
+    #food-guide-box {
+      width: min(380px, 70vw);
+      height: min(380px, 70vw);
+      border: 2px dashed rgba(99,102,241,0.45);
+      border-radius: 24px;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,0.22);
+      position: relative;
+      transition: border-color 0.3s;
+    }
+    #food-guide-box.scanning {
+      border-color: rgba(16,185,129,0.7);
+      animation: guidePulse 1s ease-in-out infinite;
+    }
+    @keyframes guidePulse {
+      0%,100% { box-shadow: 0 0 0 9999px rgba(0,0,0,0.22), 0 0 0 3px rgba(16,185,129,0.2); }
+      50%      { box-shadow: 0 0 0 9999px rgba(0,0,0,0.22), 0 0 0 6px rgba(16,185,129,0.4); }
+    }
+    #food-guide-label {
+      position: absolute; bottom: -36px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.1em;
+      text-transform: uppercase; color: rgba(165,180,252,0.7);
+      white-space: nowrap;
+    }
+
+    /* ── Top HUD bar (matches tracker nav style) ─────────────────────── */
+    #cal-hud {
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 20px;
+      background: rgba(8,11,22,0.72);
+      backdrop-filter: blur(20px) saturate(1.4);
+      border-bottom: 1px solid rgba(99,102,241,0.15);
+    }
+    #cal-hud-brand {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 0.95rem; font-weight: 700; color: #e2e8f0;
+      text-decoration: none;
+    }
+    #cal-hud-brand span { font-size: 1.3rem; }
+    #cal-hud-title {
+      font-size: 0.72rem; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: #6366f1;
+    }
+    #cal-back-btn {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 14px; border-radius: 999px;
+      background: rgba(99,102,241,0.12);
+      border: 1px solid rgba(99,102,241,0.25);
+      color: #a5b4fc; font-size: 0.78rem; font-weight: 600;
+      cursor: pointer; text-decoration: none;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    #cal-back-btn:hover { background: rgba(99,102,241,0.22); border-color: rgba(99,102,241,0.5); }
+
+    /* ── Bottom control bar ───────────────────────────────────────────── */
+    #cal-controls {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      z-index: 100;
+      display: flex; align-items: center; justify-content: center; gap: 20px;
+      padding: 20px 24px 28px;
+      background: linear-gradient(to top, rgba(5,8,16,0.92) 60%, transparent);
+    }
+
+    /* Snapshot button */
+    #btn-snapshot {
+      display: flex; align-items: center; justify-content: center;
+      width: 72px; height: 72px; border-radius: 50%;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: 3px solid rgba(255,255,255,0.15);
+      box-shadow: 0 0 28px rgba(99,102,241,0.5);
+      cursor: pointer; font-size: 1.8rem;
+      transition: transform 0.15s, box-shadow 0.15s;
+      position: relative;
+    }
+    #btn-snapshot:hover { transform: scale(1.08); box-shadow: 0 0 40px rgba(99,102,241,0.7); }
+    #btn-snapshot:active { transform: scale(0.94); }
+    #btn-snapshot.scanning {
+      background: linear-gradient(135deg, #10b981, #059669);
+      box-shadow: 0 0 32px rgba(16,185,129,0.6);
+      animation: snapshotPulse 0.8s ease-in-out infinite;
+    }
+    @keyframes snapshotPulse {
+      0%,100% { box-shadow: 0 0 24px rgba(16,185,129,0.5); }
+      50%      { box-shadow: 0 0 48px rgba(16,185,129,0.8); }
+    }
+
+    /* Voice hint */
+    #cal-voice-hint {
+      font-size: 0.72rem; font-weight: 500; color: rgba(100,116,139,0.8);
+      display: flex; align-items: center; gap: 5px;
+      position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+      white-space: nowrap;
+    }
+
+    /* ── Calorie Result Popup ─────────────────────────────────────────── */
+    #cal-result-popup {
+      position: fixed; bottom: 110px; left: 50%; transform: translateX(-50%) translateY(30px);
+      z-index: 200;
+      width: min(400px, 92vw);
+      background: rgba(8,11,22,0.92);
+      backdrop-filter: blur(28px) saturate(1.5);
+      border: 1px solid rgba(99,102,241,0.28);
+      border-radius: 24px;
+      padding: 20px 22px 18px;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04);
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.35s cubic-bezier(0.34,1.56,0.64,1),
+                  transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    #cal-result-popup.visible {
+      opacity: 1; pointer-events: auto;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Popup header */
+    #cal-popup-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    #cal-popup-label {
+      font-size: 0.68rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: #6366f1;
+    }
+    #cal-popup-close {
+      width: 26px; height: 26px; border-radius: 50%;
+      background: rgba(255,255,255,0.07); border: none;
+      color: #64748b; font-size: 1rem; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 0.15s, color 0.15s;
+    }
+    #cal-popup-close:hover { background: rgba(255,255,255,0.12); color: #e2e8f0; }
+
+    /* Food rows */
+    #cal-foods-list {
+      list-style: none; padding: 0; margin: 0 0 14px;
+    }
+    #cal-foods-list li {
+      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+      font-size: 0.9rem; color: #e2e8f0;
+    }
+    #cal-foods-list li:last-child { border-bottom: none; }
+    .cal-food-name { font-weight: 500; }
+    .cal-food-portion {
+      font-size: 0.75rem; color: #64748b; margin-left: 6px; font-weight: 400;
+    }
+    .cal-food-kcal {
+      font-size: 0.88rem; font-weight: 700; color: #a5b4fc; white-space: nowrap;
+    }
+
+    /* Total row */
+    #cal-popup-total {
+      display: flex; align-items: baseline; gap: 6px;
+      border-top: 1px solid rgba(255,255,255,0.08);
+      padding-top: 12px;
+    }
+    #cal-total-label { font-size: 0.72rem; color: #64748b; }
+    #cal-total-value { font-size: 2rem; font-weight: 800; color: #f1f5f9; line-height: 1; }
+    #cal-total-unit { font-size: 0.72rem; color: #64748b; }
+
+    /* No-food state */
+    #cal-no-food {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      z-index: 200; text-align: center;
+      opacity: 0; pointer-events: none; transition: opacity 0.3s;
+    }
+    #cal-no-food.visible { opacity: 1; }
+    #cal-no-food-icon { font-size: 3rem; margin-bottom: 8px; }
+    #cal-no-food-msg { font-size: 0.9rem; font-weight: 600; color: #64748b; }
+
+    /* Scanning spinner overlay */
+    #cal-scanning-overlay {
+      position: fixed; inset: 0; z-index: 150;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 16px; background: rgba(5,8,16,0.55); backdrop-filter: blur(4px);
+      opacity: 0; pointer-events: none; transition: opacity 0.3s;
+    }
+    #cal-scanning-overlay.visible { opacity: 1; pointer-events: auto; }
+    .cal-spinner {
+      width: 52px; height: 52px; border-radius: 50%;
+      border: 3px solid rgba(99,102,241,0.15);
+      border-top-color: #6366f1;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #cal-scanning-text {
+      font-size: 0.82rem; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #a5b4fc;
+    }
+
+    /* ── Friday Waveform HUD (reused from index.html) ─────────────────── */
+    #friday-wave-hud {
+      position: fixed; top: 62px; left: 50%; transform: translateX(-50%);
+      z-index: 1000;
+      display: none; align-items: center; gap: 10px;
+      background: rgba(8,11,22,0.82); backdrop-filter: blur(18px) saturate(1.5);
+      border: 1px solid rgba(99,102,241,0.28); border-radius: 999px;
+      padding: 8px 16px 8px 12px; pointer-events: none;
+      box-shadow: 0 4px 24px rgba(99,102,241,0.18), inset 0 1px 0 rgba(255,255,255,0.06);
+      transition: opacity 0.3s, transform 0.3s;
+    }
+    .fw-bar {
+      display: inline-block; width: 3px; border-radius: 3px;
+      background: linear-gradient(180deg,#818cf8,#6366f1);
+      height: 4px; opacity: 0.35;
+    }
+    #friday-wave-hud.fw-listening .fw-bar {
+      animation: fw-listen calc(0.5s + var(--i)*0.06s) ease-in-out infinite alternate;
+      background: linear-gradient(180deg,#93c5fd,#6366f1);
+    }
+    @keyframes fw-listen {
+      0%  {height:4px;opacity:.55} 25% {height:18px;opacity:1}
+      50% {height:8px;opacity:.75} 75% {height:22px;opacity:1}
+      100%{height:6px;opacity:.6}
+    }
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(1){animation-delay:.00s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(2){animation-delay:.07s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(3){animation-delay:.14s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(4){animation-delay:.05s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(5){animation-delay:.11s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(6){animation-delay:.03s}
+    #friday-wave-hud.fw-listening .fw-bar:nth-child(7){animation-delay:.09s}
+    #friday-wave-hud.fw-responding .fw-bar {
+      animation: fw-respond 1.1s ease-in-out infinite alternate;
+      background: linear-gradient(180deg,#34d399,#6366f1);
+    }
+    @keyframes fw-respond { 0%{height:5px;opacity:.6} 100%{height:20px;opacity:1} }
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(1){animation-delay:.00s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(2){animation-delay:.16s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(3){animation-delay:.32s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(4){animation-delay:.48s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(5){animation-delay:.32s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(6){animation-delay:.16s}
+    #friday-wave-hud.fw-responding .fw-bar:nth-child(7){animation-delay:.00s}
+    #friday-wave-hud.fw-listening  { border-color: rgba(147,197,253,.45); }
+    #friday-wave-hud.fw-responding { border-color: rgba(52,211,153,.40); }
+  </style>
+</head>
+<body>
+
+  <!-- ── Camera feed ─────────────────────────────────────────────────── -->
+  <div id="cal-camera-wrap">
+    <video id="cal-video" autoplay muted playsinline aria-label="Camera feed for food scanning"></video>
+  </div>
+
+  <!-- ── Food frame guide ────────────────────────────────────────────── -->
+  <div id="food-guide" aria-hidden="true">
+    <div id="food-guide-box">
+      <span id="food-guide-label">Frame your food here</span>
+    </div>
+  </div>
+
+  <!-- ── Top HUD bar ────────────────────────────────────────────────── -->
+  <div id="cal-hud">
+    <a href="/" id="cal-back-btn" aria-label="Back to tracker">
+      <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd"/></svg>
+      Tracker
+    </a>
+    <span id="cal-hud-title">🍽️ Calorie Scanner</span>
+    <a href="#" id="cal-hud-brand" aria-label="ActionCount home">
+      <span>🏋️</span> ActionCount
+    </a>
+  </div>
+
+  <!-- ── Friday waveform HUD ─────────────────────────────────────────── -->
+  <div id="friday-wave-hud" aria-hidden="true">
+    <span id="friday-wave-icon" style="font-size:.9rem;">🎙️</span>
+    <div id="friday-wave-bars" style="display:flex;align-items:center;gap:3px;height:22px;">
+      <span class="fw-bar" style="--i:0"></span>
+      <span class="fw-bar" style="--i:1"></span>
+      <span class="fw-bar" style="--i:2"></span>
+      <span class="fw-bar" style="--i:3"></span>
+      <span class="fw-bar" style="--i:4"></span>
+      <span class="fw-bar" style="--i:5"></span>
+      <span class="fw-bar" style="--i:6"></span>
+    </div>
+    <span id="friday-wave-label" style="font-size:.68rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#a5b4fc;white-space:nowrap;">Listening…</span>
+  </div>
+
+  <!-- ── Scanning overlay ───────────────────────────────────────────── -->
+  <div id="cal-scanning-overlay" aria-live="polite">
+    <div class="cal-spinner"></div>
+    <span id="cal-scanning-text">Analysing food…</span>
+  </div>
+
+  <!-- ── Calorie result popup ───────────────────────────────────────── -->
+  <div id="cal-result-popup" role="dialog" aria-label="Calorie scan result" aria-modal="true">
+    <div id="cal-popup-header">
+      <span id="cal-popup-label">🍽️ Calorie Scan</span>
+      <button id="cal-popup-close" aria-label="Close result">✕</button>
+    </div>
+    <ul id="cal-foods-list"></ul>
+    <div id="cal-popup-total">
+      <span id="cal-total-label">Total</span>
+      <span id="cal-total-value">—</span>
+      <span id="cal-total-unit">kcal</span>
+    </div>
+  </div>
+
+  <!-- ── No food detected ───────────────────────────────────────────── -->
+  <div id="cal-no-food" aria-live="polite">
+    <div id="cal-no-food-icon">🚫</div>
+    <div id="cal-no-food-msg">No food detected — try again</div>
+  </div>
+
+  <!-- ── Bottom controls ───────────────────────────────────────────── -->
+  <div id="cal-controls">
+    <button id="btn-snapshot" aria-label="Take snapshot to scan food" title="Take Snapshot">
+      📸
+    </button>
+    <span id="cal-voice-hint">Say "take snapshot" to scan</span>
+  </div>
+
+  <!-- ── Scripts ────────────────────────────────────────────────────── -->
+  <script src="/static/js/api.js"></script>
+  <script>
+    // ── Auth guard ──────────────────────────────────────────────────────
+    (async function authGuard() {
+      if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+      try { await apiFetch('/api/user/profile'); } catch(e) {
+        if (e.message && e.message.includes('401')) {
+          clearToken(); window.location.href = '/login';
+        }
+      }
+    })();
+  </script>
+  <script src="/static/js/calorie.js"></script>
+</body>
+</html>

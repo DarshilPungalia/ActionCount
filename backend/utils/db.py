@@ -80,21 +80,22 @@ def _workout_plans():
 
 
 # ── Muscle group mapping ──────────────────────────────────────────────────────
+# Fine-grained groups match paths.json keys exactly for SVG heatmap coloring.
 EXERCISE_MUSCLE_MAP: dict[str, str] = {
-    # Arms
-    "Bicep Curl":      "Arms",
+    # Bicep
+    "Bicep Curl":      "Bicep",
     # Chest
     "Push-Up":         "Chest",
     "Push Up":         "Chest",
-    # Back
-    "Pull-Up":         "Back",
-    "Pull Up":         "Back",
-    # Legs
-    "Squat":           "Legs",
-    "Knee Press":      "Legs",
-    # Shoulders
-    "Lateral Raise":   "Shoulders",
-    "Overhead Press":  "Shoulders",
+    # Lats / Back
+    "Pull-Up":         "Lats",
+    "Pull Up":         "Lats",
+    # Quads
+    "Squat":           "Quads",
+    "Knee Press":      "Quads",
+    # Delts (Shoulders)
+    "Lateral Raise":   "Delts",
+    "Overhead Press":  "Delts",
     # Core
     "Sit-Up":          "Core",
     "Sit Up":          "Core",
@@ -103,16 +104,50 @@ EXERCISE_MUSCLE_MAP: dict[str, str] = {
     "Knee Raise":      "Core",
 }
 
-MUSCLE_GROUPS = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"]
+# Fine-grained groups — mirrors the values in paths.json
+MUSCLE_GROUPS = [
+    "Bicep", "Triceps", "Forearms",
+    "Chest",
+    "Delts",
+    "Lats", "Traps", "Rhomboids",
+    "Core",
+    "Quads", "Hamstrings", "Calfs", "Glutes", "Adductors",
+]
+
+# Legacy broad-group alias — used by radar chart & summary cards
+BROAD_MUSCLE_GROUPS = ["Arms", "Chest", "Back", "Legs", "Shoulders", "Core"]
+
+# Fine → broad mapping for radar / bar charts that still use 6-group display
+FINE_TO_BROAD: dict[str, str] = {
+    "Bicep":     "Arms",
+    "Triceps":   "Arms",
+    "Forearms":  "Arms",
+    "Chest":     "Chest",
+    "Delts":     "Shoulders",
+    "Lats":      "Back",
+    "Traps":     "Back",
+    "Rhomboids": "Back",
+    "Core":      "Core",
+    "Quads":     "Legs",
+    "Hamstrings":"Legs",
+    "Calfs":     "Legs",
+    "Glutes":    "Legs",
+    "Adductors": "Legs",
+}
 
 # Reverse map: muscle group → list of exercise keys (for replacement suggestions)
 MUSCLE_EXERCISE_MAP: dict[str, list[str]] = {
-    "Arms":      ["bicep_curl"],
+    "Bicep":     ["bicep_curl"],
     "Chest":     ["pushup"],
+    "Lats":      ["pullup"],
+    "Quads":     ["squat", "knee_press"],
+    "Core":      ["situp", "crunch", "leg_raise", "knee_raise"],
+    "Delts":     ["lateral_raise", "overhead_press"],
+    # Broad-group fallbacks (kept for suggest_replacement_exercises compat)
+    "Arms":      ["bicep_curl"],
     "Back":      ["pullup"],
     "Legs":      ["squat", "knee_press", "knee_raise", "leg_raise"],
     "Shoulders": ["lateral_raise", "overhead_press"],
-    "Core":      ["situp", "crunch", "leg_raise", "knee_raise"],
 }
 
 # Canonical display names for exercise keys
@@ -319,20 +354,29 @@ def get_workout_history(username: str) -> dict:
 
 def get_monthly_stats(username: str, year_month: Optional[str] = None) -> dict[str, int]:
     """
-    Aggregate *sets* by muscle group for a given month (YYYY-MM).
-    Returns {muscle_group: set_count}.
+    Aggregate *sets* by fine-grained muscle group for a given month (YYYY-MM).
+    Returns {muscle_group: set_count} for fine-grained groups.
+    Also includes broad-group totals (Arms, Back, Legs, Shoulders) derived from
+    the fine-grained data so the radar chart continues to work.
     """
     target_month = year_month or datetime.now().strftime("%Y-%m")
     docs = _workouts().find(
         {"username": username, "date": {"$regex": f"^{target_month}"}},
         {"_id": 0, "exercise": 1, "sets": 1},
     )
+    # Fine-grained accumulator
     muscle_sets: dict[str, int] = {g: 0 for g in MUSCLE_GROUPS}
     for doc in docs:
         muscle = EXERCISE_MUSCLE_MAP.get(doc["exercise"], "Other")
         if muscle in muscle_sets:
             muscle_sets[muscle] += len(doc.get("sets", []))
-    return muscle_sets
+    # Add broad-group totals so existing callers (radar, summary cards) still work
+    broad: dict[str, int] = {g: 0 for g in BROAD_MUSCLE_GROUPS}
+    for fine, count in muscle_sets.items():
+        broad_key = FINE_TO_BROAD.get(fine)
+        if broad_key:
+            broad[broad_key] += count
+    return {**muscle_sets, **broad}
 
 
 def get_total_sets_month(username: str, year_month: Optional[str] = None) -> int:

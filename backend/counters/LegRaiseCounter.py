@@ -6,7 +6,7 @@ Counts leg-raise reps using hip-knee-ankle angle (per-limb).
 Posture checks (priority order):
   1. Lower back arch   — angle(shoulder, hip, knee) opens up (back lifts off floor)
   2. Legs bent         — angle(hip, knee, ankle) < 160°
-  3. Dropping legs fast — high downward ankle velocity
+  3. Dropping legs fast — high downward ankle velocity  (lowest priority)
   4. Incomplete raise  — legs not reaching sufficient height
 
 COCO-17:  Left leg: hip=11, knee=13, ankle=15
@@ -25,7 +25,7 @@ class LegRaiseCounter(BaseCounter):
 
     _BACK_ARCH_THRESH  = 170   # °: shoulder-hip-knee angle; above = back arching
     _BENT_LEG_THRESH   = 160   # °: hip-knee-ankle angle; below = legs too bent
-    _DROP_SPEED_THRESH = 200   # px/s: downward ankle velocity (dropping fast)
+    _DROP_SPEED_THRESH = 320   # px/s: downward ankle velocity (raised — lower priority)
     _RAISE_MARGIN      = 30    # px: ankle must rise above hip level
 
     def _compute(self, frame: np.ndarray, landmarks_list: list) -> tuple:
