@@ -458,24 +458,26 @@
         }
 
         case 'save_set': {
-          const btn = document.getElementById('btn-save-set');
-          if (btn && !btn.disabled) btn.click();
+          // Use unified saveSet() so PlanLoader auto-advance works for voice too
+          if (typeof window.saveSet === 'function') {
+            window.saveSet();
+          } else {
+            const btn = document.getElementById('btn-save-set');
+            if (btn && !btn.disabled) btn.click();
+          }
           break;
         }
 
         case 'next_set': {
-          // Auto-save if there are unsaved reps, then reset for next set
-          const repEl  = document.getElementById('rep-count');
-          const reps   = repEl ? parseInt(repEl.textContent || '0', 10) : 0;
-          const saveBtn = document.getElementById('btn-save-set');
-
-          if (reps > 0 && saveBtn && !saveBtn.disabled) {
-            // Mirror btn-save-set click — tracker.js will save + auto-reset
-            saveBtn.click();
+          // Save current reps (if any) then advance
+          if (typeof window.saveSet === 'function') {
+            window.saveSet();
           } else {
-            // Nothing to save, just reset
-            const resetBtn = document.getElementById('btn-reset');
-            if (resetBtn) resetBtn.click();
+            const repEl   = document.getElementById('rep-count');
+            const reps    = repEl ? parseInt(repEl.textContent || '0', 10) : 0;
+            const saveBtn = document.getElementById('btn-save-set');
+            if (reps > 0 && saveBtn && !saveBtn.disabled) saveBtn.click();
+            else { const r = document.getElementById('btn-reset'); if (r) r.click(); }
           }
           break;
         }
@@ -628,10 +630,10 @@
   <script>
   'use strict';
 
-  // Voice IDs
+  // Free premade ElevenLabs voices (no paid subscription needed)
   const _FRIDAY_VOICES = {
-    'sebastian': '1SaGpH4wLZDmppsPYVpx',
-    'serafina':  '4tRn1lSkEn13EVTuqb0g',
+    'rachel': '21m00Tcm4TlvDq8ikWAM',
+    'adam':   'pNInz6obpgDQGcFmaJgB',
   };
 
   // Load user's current voice preference and highlight the correct button

@@ -8,7 +8,7 @@ Dependencies:
 
 Environment variables (.env):
   ELEVENLABS_API_KEY   — required
-  ELEVENLABS_VOICE_ID  — optional, overrides the default voice (Sebastian)
+  ELEVENLABS_VOICE_ID  — optional, overrides the default voice (Rachel)
 
 Public API (unchanged from Kokoro version):
   speak(text, voice_id)         → raw MP3 bytes (streamed & concatenated)
@@ -29,14 +29,21 @@ from typing import Optional
 _TAG = "[FridayTTS/ElevenLabs]"
 
 # ── ElevenLabs voice catalogue ────────────────────────────────────────────────
+# Only FREE premade voices are listed here — library/cloned voices require a
+# paid subscription. Set ELEVENLABS_VOICE_ID in .env to use your own voice.
 VOICES: dict[str, str] = {
-    "Sebastian": "1SaGpH4wLZDmppsPYVpx",
-    "Serafina":  "4tRn1lSkEn13EVTuqb0g",
+    # ElevenLabs built-in premade voices (free on all plans)
+    "Rachel": "21m00Tcm4TlvDq8ikWAM",   # calm, female
+    "Adam":   "pNInz6obpgDQGcFmaJgB",   # deep, male
+    "Antoni": "ErXwobaYiN019PkySvjV",   # well-rounded, male
+    "Elli":   "MF3mGyEYCl7XYWbV9V6O",   # emotional, female
+    "Josh":   "TxGEqnHWrfWFTfGW9XjX",   # deep, male
+    "Arnold": "VR6AewLTigWG4xSOukaG",   # crispy, male
 }
 
 _DEFAULT_VOICE_ID: str = (
     os.getenv("ELEVENLABS_VOICE_ID")
-    or VOICES["Sebastian"]          # fallback if env not set
+    or VOICES["Rachel"]          # free premade voice fallback
 )
 
 _API_KEY: Optional[str] = os.getenv("ELEVENLABS_API_KEY")

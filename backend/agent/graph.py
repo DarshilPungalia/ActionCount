@@ -93,12 +93,36 @@ _checkpointer  = None
 
 
 def _get_checkpointer():
+    """
+    Return a LangGraph-compatible BaseCheckpointSaver.
+
+    MongoDBSaver.from_conn_string() is a context manager — calling it directly
+    yields a _GeneratorContextManager, NOT a BaseCheckpointSaver, which LangGraph
+    rejects at compile time.  We enter the context manager via __enter__() to get
+    the real saver object, and cache it for the lifetime of the process.
+
+    Falls back to MemorySaver (in-process, non-persistent) if MongoDB is
+    unavailable so the agent continues to work without crashing.
+    """
     global _checkpointer
-    if _checkpointer is None:
-        from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: PLC0415
-        _checkpointer = MongoDBSaver.from_conn_string(
-            _MONGO_URI, db_name=_CHECKPOINT_DB
-        )
+    if _checkpointer is not None:
+        return _checkpointer
+
+    if _MONGO_URI:
+        try:
+            from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: PLC0415
+            cm = MongoDBSaver.from_conn_string(_MONGO_URI, db_name=_CHECKPOINT_DB)
+            # Enter the context manager to obtain the real BaseCheckpointSaver instance
+            _checkpointer = cm.__enter__()
+            print("[Friday/Checkpointer] ✅ MongoDBSaver connected")
+            return _checkpointer
+        except Exception as exc:
+            print(f"[Friday/Checkpointer] ⚠  MongoDB unavailable ({exc}) — using MemorySaver")
+
+    # Fallback: in-memory (conversation history lost on restart, but functional)
+    from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
+    _checkpointer = MemorySaver()
+    print("[Friday/Checkpointer] ℹ️  Using MemorySaver (in-process, non-persistent)")
     return _checkpointer
 
 

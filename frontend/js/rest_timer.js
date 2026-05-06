@@ -26,6 +26,7 @@ const RestTimer = (() => {
   let _timeEl      = null;   // MM:SS text inside ring
   let _nextLabelEl = null;   // "Next: Push-up  Set 2/3" label
   let _skipBtn     = null;   // Skip button
+  let _adjustBtns  = null;   // +30 / -30 row
 
   let _interval    = null;   // setInterval handle
   let _total       = 0;
@@ -140,6 +141,36 @@ const RestTimer = (() => {
       lineHeight:  '1.5',
     });
 
+    // Adjust row (+30 / -30)
+    _adjustBtns = document.createElement('div');
+    Object.assign(_adjustBtns.style, {
+      display:    'flex',
+      gap:        '10px',
+      marginTop:  '2px',
+    });
+
+    [['−30s', -30], ['+30s', +30]].forEach(([label, delta]) => {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      Object.assign(btn.style, {
+        flex:          '1',
+        padding:       '7px 0',
+        borderRadius:  '8px',
+        border:        '1px solid rgba(99,102,241,0.28)',
+        background:    'transparent',
+        color:         'rgba(165,180,252,0.8)',
+        fontSize:      '0.78rem',
+        fontWeight:    '600',
+        cursor:        'pointer',
+        fontFamily:    '\'Inter\', sans-serif',
+        transition:    'background 0.15s',
+      });
+      btn.addEventListener('mouseover', () => { btn.style.background = 'rgba(99,102,241,0.15)'; });
+      btn.addEventListener('mouseout',  () => { btn.style.background = 'transparent'; });
+      btn.addEventListener('click', () => adjust(delta));
+      _adjustBtns.appendChild(btn);
+    });
+
     // Skip button
     _skipBtn = document.createElement('button');
     _skipBtn.id = 'rest-skip-btn';
@@ -165,6 +196,7 @@ const RestTimer = (() => {
     card.appendChild(title);
     card.appendChild(svg);
     card.appendChild(_nextLabelEl);
+    card.appendChild(_adjustBtns);
     card.appendChild(_skipBtn);
     _overlayEl.appendChild(card);
     document.body.appendChild(_overlayEl);
@@ -231,6 +263,19 @@ const RestTimer = (() => {
     _finish();
   }
 
+  // ── Adjust (+30s / -30s) ─────────────────────────────────────────────────────
+  function adjust(deltaSec) {
+    if (!_interval) return;   // timer not running
+    _total = Math.max(5, _total + deltaSec);
+    // If adjustment made it expire immediately
+    const remaining = _total - _elapsed;
+    if (remaining <= 0) {
+      _finish();
+    } else {
+      _updateRing(remaining, _total);
+    }
+  }
+
   // ── Internal finish ──────────────────────────────────────────────────────────
   function _finish() {
     clearInterval(_interval);
@@ -242,6 +287,6 @@ const RestTimer = (() => {
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────
-  return { start, skip, DEFAULT_SECONDS };
+  return { start, skip, adjust, DEFAULT_SECONDS };
 
 })();

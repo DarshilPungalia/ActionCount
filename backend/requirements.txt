@@ -29,6 +29,7 @@ streamlit-cookies-controller
 langchain
 langchain-google-genai
 google-generativeai
+google-genai
 
 # Charts (Streamlit dashboard)
 plotly
@@ -55,7 +56,7 @@ soundfile
 
 # Friday AI Assistant — TTS (ElevenLabs streaming via httpx — no extra package needed)
 # Set ELEVENLABS_API_KEY in .env
-# Optional: ELEVENLABS_VOICE_ID (default: Sebastian = 1SaGpH4wLZDmppsPYVpx)
+# Optional: ELEVENLABS_VOICE_ID (default: Rachel — free premade voice)
 
 # HTTP client
 httpx
