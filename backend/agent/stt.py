@@ -6,15 +6,15 @@ Speech-to-Text daemon for the Friday AI assistant.
 Stack:
   - PyAudio         : server microphone capture
   - Silero VAD      : voice activity detection (speech onset / offset)
-  - Whisper large-v3-turbo (via HuggingFace transformers) : transcription
+  - NVIDIA Parakeet TDT 0.6B v2 (via NeMo) : transcription
 
 Flow:
   1. PyAudio loop reads raw PCM in small chunks (512 samples @ 16 kHz)
   2. Silero VAD scores each chunk → detects speech start / end
   3. On speech START  → fire on_speech_start() + WebSocket listening indicator
   4. On speech START while TTS active → call tts.stop_speaking() (barge-in)
-  5. On speech END    → fire on_speech_end(), pass buffered audio to Whisper
-  6. Whisper returns transcript → fire callback(transcript)
+  5. On speech END    → fire on_speech_end(), pass buffered audio to Parakeet
+  6. Parakeet returns transcript → fire callback(transcript)
 
 Callbacks supplied to start():
   callback(transcript: str)   — final recognised phrase
@@ -22,40 +22,44 @@ Callbacks supplied to start():
   on_speech_end()             — VAD detected end of utterance
 
 Config (.env):
-  No Azure keys needed. Model is downloaded automatically by HuggingFace cache.
+  No API keys needed. Model is downloaded once via HuggingFace / NGC cache.
 """
 
 from __future__ import annotations
 
 import threading
+import tempfile
+import os
 from numpy import ndarray
 from typing import Callable, Optional
 
 _TAG = "[FridaySTT]"
 
 # ── Audio constants ───────────────────────────────────────────────────────────
-SAMPLE_RATE    = 16_000          # Silero VAD and Whisper both require 16 kHz
-CHUNK_SAMPLES  = 512             # ~32 ms per chunk at 16 kHz (Silero recommendation)
-SILENCE_CHUNKS = 25              # ~800 ms of silence after speech ends → finalize
-MIN_SPEECH_CHUNKS = 5            # ignore bursts shorter than ~160 ms (noise gate)
+SAMPLE_RATE       = 16_000   # Silero VAD and Parakeet both require 16 kHz
+CHUNK_SAMPLES     = 512      # ~32 ms per chunk at 16 kHz (Silero recommendation)
+SILENCE_CHUNKS    = 25       # ~800 ms of silence → finalise utterance
+MIN_SPEECH_CHUNKS = 5        # ignore bursts shorter than ~160 ms (noise gate)
+
+_PARAKEET_MODEL = "nvidia/parakeet-tdt-0.6b-v2"
 
 
 class FridaySTT:
-    """Singleton Whisper + Silero VAD continuous-recognition daemon."""
+    """Singleton Parakeet TDT + Silero VAD continuous-recognition daemon."""
 
     _instance: Optional["FridaySTT"] = None
 
     def __init__(self):
-        self._stop_event         = threading.Event()
+        self._stop_event          = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._callback: Optional[Callable[[str], None]] = None
         self._on_speech_start: Optional[Callable[[], None]] = None
         self._on_speech_end:   Optional[Callable[[], None]] = None
 
         # Lazy-loaded models
-        self._vad_model  = None
-        self._vad_utils  = None
-        self._whisper_pipe = None
+        self._vad_model   = None
+        self._vad_utils   = None
+        self._asr_model   = None   # NeMo ASRModel
 
     @classmethod
     def instance(cls) -> "FridaySTT":
@@ -85,7 +89,7 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Models : Silero VAD + openai/whisper-large-v3-turbo")
+        print(f"{_TAG} Models : Silero VAD + {_PARAKEET_MODEL}")
         print(f"{_TAG} Mic    : SERVER default audio device (PyAudio)")
 
     def stop(self) -> None:
@@ -107,48 +111,16 @@ class FridaySTT:
         )
         print(f"{_TAG} ✅ Silero VAD loaded.")
 
-    def _load_whisper(self):
-        if self._whisper_pipe is not None:
+    def _load_parakeet(self):
+        if self._asr_model is not None:
             return
-        print(f"{_TAG} Loading openai/whisper-large-v3-turbo …")
-        import torch  # noqa: PLC0415
-        from transformers import (  # noqa: PLC0415
-            AutoModelForSpeechSeq2Seq,
-            AutoProcessor,
-            pipeline,
+        print(f"{_TAG} Loading {_PARAKEET_MODEL} (NeMo) …")
+        import nemo.collections.asr as nemo_asr  # noqa: PLC0415
+        self._asr_model = nemo_asr.models.ASRModel.from_pretrained(
+            model_name=_PARAKEET_MODEL
         )
-        device     = "cuda:0" if torch.cuda.is_available() else "cpu"
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        model_id   = "openai/whisper-large-v3-turbo"
-
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_id,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-        )
-        model.to(device)
-
-        # Force English-only decoding: clear any cached forced_decoder_ids
-        # so that our per-call generate_kwargs (language+task) take full effect
-        # without the SuppressTokensLogitsProcessor conflict.
-        model.generation_config.forced_decoder_ids = None
-        model.generation_config.language = "english"
-        model.generation_config.task = "transcribe"
-
-        processor = AutoProcessor.from_pretrained(model_id)
-
-        # NOTE: do NOT pass generate_kwargs here — set them per-call in _transcribe
-        # to avoid the duplicate SuppressTokensLogitsProcessor warning.
-        self._whisper_pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            torch_dtype=torch_dtype,
-            device=device,
-        )
-        print(f"{_TAG} Whisper loaded on {device} — forced language: English.")
+        self._asr_model.eval()
+        print(f"{_TAG} ✅ Parakeet TDT loaded.")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -159,7 +131,7 @@ class FridaySTT:
             print(f"{_TAG} Recognition loop attempt #{attempt}")
             try:
                 self._load_vad()
-                self._load_whisper()
+                self._load_parakeet()
                 self._recognition_loop()
                 if self._stop_event.is_set():
                     break
@@ -187,14 +159,14 @@ class FridaySTT:
 
         print(f"{_TAG} ✅ Mic stream open — listening …")
 
-        speech_buffer:  list[np.ndarray] = []
-        silence_count:  int = 0
-        is_speaking:    bool = False
-        speech_chunk_count: int = 0
+        speech_buffer:      list[np.ndarray] = []
+        silence_count:      int  = 0
+        is_speaking:        bool = False
+        speech_chunk_count: int  = 0
 
         try:
             while not self._stop_event.is_set():
-                raw = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
+                raw   = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 chunk = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
                 # Silero VAD confidence for this chunk
@@ -207,10 +179,9 @@ class FridaySTT:
                     if not is_speaking:
                         speech_chunk_count += 1
                         if speech_chunk_count >= MIN_SPEECH_CHUNKS:
-                            # Confirmed speech onset
                             is_speaking   = True
                             silence_count = 0
-                            print(f"{_TAG} 🎙  Speech STARTED (VAD confidence={confidence:.2f})")
+                            print(f"{_TAG} 🎙️  Speech STARTED (VAD confidence={confidence:.2f})")
                             self._fire_speech_start()
                     speech_buffer.append(chunk)
                     silence_count = 0
@@ -225,14 +196,13 @@ class FridaySTT:
                     silence_count += 1
 
                     if silence_count >= SILENCE_CHUNKS:
-                        # Speech segment ended — transcribe
                         print(f"{_TAG} 🔇 Speech ENDED — transcribing …")
                         self._fire_speech_end()
 
                         audio_np = np.concatenate(speech_buffer, axis=0)
-                        speech_buffer     = []
-                        silence_count     = 0
-                        is_speaking       = False
+                        speech_buffer      = []
+                        silence_count      = 0
+                        is_speaking        = False
                         speech_chunk_count = 0
 
                         self._transcribe(audio_np)
@@ -246,31 +216,54 @@ class FridaySTT:
     # ── Transcription ─────────────────────────────────────────────────────────
 
     def _transcribe(self, audio_np: "ndarray") -> None:
+        """
+        Parakeet TDT transcription.
+
+        NeMo's ASRModel.transcribe() accepts file paths, so we write the
+        PCM buffer to a temporary WAV file and pass it in — no disk clutter
+        because we delete it immediately after.
+        """
+        import numpy as np       # noqa: PLC0415
+        import soundfile as sf   # noqa: PLC0415
+
         try:
-            # Minimum duration gate: skip very short clips (< 0.4 s) that are
-            # almost certainly noise and cause hallucinated multilingual output.
             duration_s = len(audio_np) / SAMPLE_RATE
             if duration_s < 0.4:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
-            result = self._whisper_pipe(
-                {"array": audio_np, "sampling_rate": SAMPLE_RATE},
-                generate_kwargs={"language": "english", "task": "transcribe"},
-            )
-            text = (result.get("text") or "").strip()
+            # Write to a temp WAV file (Parakeet needs a file path)
+            with tempfile.NamedTemporaryFile(
+                suffix=".wav", delete=False, prefix="friday_stt_"
+            ) as tmp:
+                tmp_path = tmp.name
+
+            try:
+                sf.write(tmp_path, audio_np, SAMPLE_RATE, subtype="PCM_16")
+                outputs = self._asr_model.transcribe([tmp_path])
+                # Parakeet returns a list of Hypothesis objects; .text is the field
+                text = (outputs[0].text if outputs else "").strip()
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
                 return
+
             word_count = len(text.split())
             print(f"{_TAG} Transcript ({word_count} words): \"{text}\"")
+
             if self._callback:
                 try:
                     self._callback(text)
                 except Exception as exc:
                     print(f"{_TAG} Transcript callback error: {exc}")
+
         except Exception as exc:
-            print(f"{_TAG} Whisper transcription error: {exc}")
+            print(f"{_TAG} Parakeet transcription error: {exc}")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
