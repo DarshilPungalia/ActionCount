@@ -94,15 +94,13 @@ _checkpointer  = None
 
 def _get_checkpointer():
     """
-    Return a LangGraph-compatible BaseCheckpointSaver.
+    Return a LangGraph-compatible BaseCheckpointSaver backed by MongoDB.
 
-    MongoDBSaver.from_conn_string() is a context manager — calling it directly
-    yields a _GeneratorContextManager, NOT a BaseCheckpointSaver, which LangGraph
-    rejects at compile time.  We enter the context manager via __enter__() to get
-    the real saver object, and cache it for the lifetime of the process.
+    Uses AsyncMongoClient directly (not the context-manager form) so the
+    connection stays open for the lifetime of the process and never hits
+    "Cannot use MongoClient after close".
 
-    Falls back to MemorySaver (in-process, non-persistent) if MongoDB is
-    unavailable so the agent continues to work without crashing.
+    Falls back to MemorySaver if MongoDB is unavailable.
     """
     global _checkpointer
     if _checkpointer is not None:
@@ -110,11 +108,12 @@ def _get_checkpointer():
 
     if _MONGO_URI:
         try:
-            from langgraph.checkpoint.mongodb import MongoDBSaver  # noqa: PLC0415
-            cm = MongoDBSaver.from_conn_string(_MONGO_URI, db_name=_CHECKPOINT_DB)
-            # Enter the context manager to obtain the real BaseCheckpointSaver instance
-            _checkpointer = cm.__enter__()
-            print("[Friday/Checkpointer] ✅ MongoDBSaver connected")
+            from motor.motor_asyncio import AsyncIOMotorClient          # noqa: PLC0415
+            from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver  # noqa: PLC0415
+
+            motor_client = AsyncIOMotorClient(_MONGO_URI)
+            _checkpointer = AsyncMongoDBSaver(motor_client, db_name=_CHECKPOINT_DB)
+            print("[Friday/Checkpointer] ✅ AsyncMongoDBSaver connected (motor)")
             return _checkpointer
         except Exception as exc:
             print(f"[Friday/Checkpointer] ⚠  MongoDB unavailable ({exc}) — using MemorySaver")
@@ -124,6 +123,7 @@ def _get_checkpointer():
     _checkpointer = MemorySaver()
     print("[Friday/Checkpointer] ℹ️  Using MemorySaver (in-process, non-persistent)")
     return _checkpointer
+
 
 
 # ── Command Registry ──────────────────────────────────────────────────────────

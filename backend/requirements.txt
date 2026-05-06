@@ -17,6 +17,7 @@ python-dotenv
 
 # Database
 pymongo[srv]
+motor                        
 
 # Streamlit UI
 streamlit
@@ -43,8 +44,10 @@ langchain-anthropic
 langgraph
 langgraph-checkpoint-mongodb
 
-# STT
-nemo_toolkit[asr]
+# Friday AI Assistant — STT (Whisper large-v3-turbo + Silero VAD)
+transformers
+accelerate
+datasets
 pyaudio
 soundfile
 

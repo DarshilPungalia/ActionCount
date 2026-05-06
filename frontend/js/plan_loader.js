@@ -134,8 +134,15 @@ const PlanLoader = (() => {
       // Ignore if plan not active, timer already running, or auto-save in progress
       if (!_active || _timerRunning || _autoSaving) return;
 
+      // Block stopping the set with 0 reps — force user to actually do the exercise
+      const repsNow = _getLiveReps();
+      if (repsNow === 0) {
+        if (window.showToast) window.showToast('⚠️ Do at least 1 rep before finishing the set!', true);
+        return;  // do NOT stop camera or start rest timer
+      }
+
       // Snapshot reps at camera-stop time
-      _repsSnapshot = _getLiveReps();
+      _repsSnapshot = repsNow;
       _timerRunning = true;
 
       // Small delay so live.js can process the stop first
@@ -169,23 +176,37 @@ const PlanLoader = (() => {
     // Auto-save if user didn't explicitly save and there are reps to save
     if (!_pendingSave && _repsSnapshot > 0) {
       if (typeof window.saveSet === 'function') {
-        _autoSaving = true;   // block camera-stop listener during auto-save
+        _autoSaving = true;
         try {
           await window.saveSet(_repsSnapshot, /*silent=*/true);
-          // saveSet → markSaved() + onSetSaved() → stops camera + advances
-          // onSetSaved() detects _autoSaving and skips re-starting a timer
+          // saveSet → markSaved() (_pendingSave=true) + onSetSaved() (_advance())
+          // onSetSaved skips the camera-stop click because _autoSaving=true
         } finally {
           _autoSaving = false;
         }
-        return;   // onSetSaved handles the advance + camera restart
+        // Fall through — _applyCurrentItem + _autoStart below handle restart
       }
     }
 
-    // Already saved (onSetSaved already incremented _currentIdx) or 0 reps
+    // Check if all sets are now done (last set was just saved/skipped)
+    if (_currentIdx >= _queue.length) {
+      _renderBanner();
+      if (window.showToast) window.showToast('🎉 Workout complete! Amazing work!');
+      return;
+    }
+
+    // Advance queue if this set had 0 reps (no save happened)
     if (!_pendingSave) {
-      // 0 reps — just advance without saving
       _advance();
     }
+
+    // Guard again after advance
+    if (_currentIdx >= _queue.length) {
+      _renderBanner();
+      if (window.showToast) window.showToast('🎉 Workout complete! Amazing work!');
+      return;
+    }
+
     _applyCurrentItem();
     _resetSetState();
     _autoStart();

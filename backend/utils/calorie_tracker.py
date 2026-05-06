@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-_MODEL          = "gemini-2.5-flash"
-_TIMEOUT        = 20.0   # seconds; vision calls can be slower than text
+_MODEL          = "gemini-2.0-flash"
+_TIMEOUT        = 30.0   # seconds; vision calls can be slower than text
 
 _SYSTEM_PROMPT = (
     "You are a nutrition assistant. The user has taken a photo of food. "
@@ -39,6 +39,34 @@ def _encode_frame(frame_bgr) -> str:
     if not ok:
         raise ValueError("Failed to JPEG-encode frame")
     return base64.b64encode(buf.tobytes()).decode("utf-8")
+
+
+
+def _repair_json(raw: str) -> str:
+    """Best-effort repair for truncated JSON — closes open strings/brackets."""
+    raw = raw.strip()
+    # Close an unterminated string literal first
+    in_str = False
+    escape = False
+    for ch in raw:
+        if escape:     escape = False; continue
+        if ch == '\\': escape = True;  continue
+        if ch == '"': in_str = not in_str
+    if in_str:
+        raw += '"'
+    # Close unclosed brackets/braces
+    depth: list[str] = []
+    in_str = False
+    escape = False
+    for ch in raw:
+        if escape:     escape = False; continue
+        if ch == '\\': escape = True;  continue
+        if ch == '"': in_str = not in_str; continue
+        if in_str: continue
+        if ch in ('{', '['):   depth.append('}' if ch == '{' else ']')
+        elif ch in ('}', ']') and depth: depth.pop()
+    raw += ''.join(reversed(depth))
+    return raw
 
 
 def scan_food_from_frame(frame_bgr, username: str) -> dict:
@@ -73,7 +101,7 @@ def scan_food_from_frame(frame_bgr, username: str) -> dict:
             contents=[_SYSTEM_PROMPT, image_part],
             config=genai_types.GenerateContentConfig(
                 temperature=0.2,
-                max_output_tokens=512,
+                max_output_tokens=1024,   # was 512 — caused truncation
             ),
         )
 
@@ -86,11 +114,18 @@ def scan_food_from_frame(frame_bgr, username: str) -> dict:
                 raw = raw[4:]
             raw = raw.strip()
 
-        result = json.loads(raw)
+        # Attempt to parse; if it fails, try JSON repair before giving up
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError:
+            repaired = _repair_json(raw)
+            try:
+                result = json.loads(repaired)
+                print(f"[CalorieTracker] JSON was truncated — repaired and parsed successfully.")
+            except json.JSONDecodeError as exc2:
+                print(f"[CalorieTracker] JSON parse error (even after repair): {exc2}\nRaw: {raw!r}")
+                return {"error": "parse_failed", "message": "Could not parse nutrition data from image."}
 
-    except json.JSONDecodeError as exc:
-        print(f"[CalorieTracker] JSON parse error: {exc}\nRaw: {raw!r}")
-        return {"error": "parse_failed", "message": "Could not parse nutrition data from image."}
     except Exception as exc:
         print(f"[CalorieTracker] Gemini error: {exc}")
         return {"error": "scan_failed", "message": str(exc)}
