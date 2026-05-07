@@ -251,23 +251,16 @@
     z-index:999; display:none; align-items:center; gap:6px;
     background:rgba(8,11,22,0.78); backdrop-filter:blur(14px);
     border:1px solid rgba(255,255,255,0.08); border-radius:999px;
-    padding:5px 10px; pointer-events:auto;
+    padding:5px 12px; pointer-events:auto;
     font-family:'Inter',sans-serif; font-size:0.72rem; color:#64748b;
     box-shadow:0 2px 12px rgba(0,0,0,0.35);">
-    <span style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:#475569;">Voice</span>
-    <button id="voice-btn-sebastian"
-      onclick="setFridayVoice('1SaGpH4wLZDmppsPYVpx','Sebastian')"
-      style="padding:3px 9px;border-radius:999px;border:1px solid transparent;
+    <span style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:#475569;">🎙️ Voice</span>
+    <button id="voice-btn-rachel"
+      onclick="setFridayVoice('21m00Tcm4TlvDq8ikWAM','Rachel')"
+      style="padding:3px 10px;border-radius:999px;border:1px solid transparent;
              font-size:0.72rem;font-weight:600;cursor:pointer;
              background:transparent;color:#94a3b8;transition:all .15s;"
-      title="Use Sebastian voice">Sebastian</button>
-    <span style="color:#1e293b;">|</span>
-    <button id="voice-btn-serafina"
-      onclick="setFridayVoice('4tRn1lSkEn13EVTuqb0g','Serafina')"
-      style="padding:3px 9px;border-radius:999px;border:1px solid transparent;
-             font-size:0.72rem;font-weight:600;cursor:pointer;
-             background:transparent;color:#94a3b8;transition:all .15s;"
-      title="Use Serafina voice">Serafina</button>
+      title="Rachel (ElevenLabs)">Rachel</button>
   </div>
   <style>
     .friday-voice-active {
@@ -636,36 +629,31 @@
   <script>
   'use strict';
 
-  // Free premade ElevenLabs voices (no paid subscription needed)
-  const _FRIDAY_VOICES = {
-    'rachel': '21m00Tcm4TlvDq8ikWAM',
-    'adam':   'pNInz6obpgDQGcFmaJgB',
-  };
+  const RACHEL_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
 
-  // Load user's current voice preference and highlight the correct button
+  // Show picker and always activate Rachel
   (async function initVoicePicker() {
-    // Only show picker in voice mode (the WS opens in voice mode on this page)
     const picker = document.getElementById('friday-voice-picker');
     if (picker) picker.style.display = 'flex';
+    // Always highlight Rachel
+    _highlightVoice(RACHEL_VOICE_ID);
+    // Silently ensure backend is set to Rachel
     try {
-      const data = await apiFetch('/api/voices');
-      const activeId = data.default;
-      _highlightVoice(activeId);
-    } catch (_) {
-      // Non-fatal — just show with no highlight
-    }
+      await apiFetch('/api/user/voice', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ voice_id: RACHEL_VOICE_ID }),
+      });
+    } catch (_) { /* non-fatal */ }
   })();
 
   function _highlightVoice(voiceId) {
-    document.querySelectorAll('#friday-voice-picker button').forEach(btn => {
-      btn.classList.remove('friday-voice-active');
-    });
-    const map = {
-      '1SaGpH4wLZDmppsPYVpx': 'voice-btn-sebastian',
-      '4tRn1lSkEn13EVTuqb0g': 'voice-btn-serafina',
-    };
-    const btnId = map[voiceId];
-    if (btnId) document.getElementById(btnId)?.classList.add('friday-voice-active');
+    document.querySelectorAll('#friday-voice-picker button').forEach(btn =>
+      btn.classList.remove('friday-voice-active')
+    );
+    if (voiceId === RACHEL_VOICE_ID) {
+      document.getElementById('voice-btn-rachel')?.classList.add('friday-voice-active');
+    }
   }
 
   async function setFridayVoice(voiceId, voiceName) {
@@ -676,11 +664,8 @@
         body:    JSON.stringify({ voice_id: voiceId }),
       });
       _highlightVoice(voiceId);
-      // Brief confirmation toast if available, else console
-      console.log(`[FridayVoice] Switched to ${voiceName} (${voiceId})`);
-      if (window.showToast) {
-        window.showToast(`🎙️ Voice: ${voiceName}`);
-      }
+      console.log(`[FridayVoice] ${voiceName} (${voiceId})`);
+      if (window.showToast) window.showToast(`🎙️ Voice: ${voiceName}`);
     } catch (err) {
       console.warn('[FridayVoice] Failed to set voice:', err.message);
     }

@@ -16,23 +16,26 @@
   const clockEl = document.createElement('div');
   clockEl.id = 'hud-clock';
   clockEl.style.cssText =
-    'position:fixed;top:16px;left:16px;z-index:60;' +
-    'pointer-events:none;user-select:none;';
+    'position:fixed;top:14px;left:16px;z-index:60;' +
+    'pointer-events:none;user-select:none;' +
+    'background:rgba(10,14,26,0.55);backdrop-filter:blur(10px);' +
+    'border:1px solid rgba(255,255,255,0.07);border-radius:10px;' +
+    'padding:8px 14px;';
 
   const timeEl = document.createElement('div');
   timeEl.id = 'hud-time';
   timeEl.style.cssText =
-    'font-family:\'Inter\',monospace;font-size:22px;font-weight:700;' +
-    'color:rgba(255,255,255,0.95);' +
-    'text-shadow:0 0 14px rgba(100,200,255,0.55);' +
-    'letter-spacing:0.04em;';
+    'font-family:\'Inter\',monospace;font-size:30px;font-weight:800;' +
+    'color:rgba(255,255,255,0.97);' +
+    'text-shadow:0 0 18px rgba(100,200,255,0.6);' +
+    'letter-spacing:0.04em;line-height:1.1;';
 
   const dateEl = document.createElement('div');
   dateEl.id = 'hud-date';
   dateEl.style.cssText =
-    'font-family:\'Inter\',monospace;font-size:11px;font-weight:300;' +
-    'color:rgba(180,220,255,0.5);' +
-    'letter-spacing:0.12em;text-transform:uppercase;margin-top:2px;';
+    'font-family:\'Inter\',monospace;font-size:13px;font-weight:400;' +
+    'color:rgba(180,220,255,0.55);' +
+    'letter-spacing:0.1em;text-transform:uppercase;margin-top:3px;';
 
   clockEl.appendChild(timeEl);
   clockEl.appendChild(dateEl);

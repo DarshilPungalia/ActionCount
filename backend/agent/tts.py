@@ -32,10 +32,6 @@ _TAG = "[FridayTTS/ElevenLabs]"
 VOICES: dict[str, str] = {
     "Rachel": "21m00Tcm4TlvDq8ikWAM",   # calm, female
     "Adam":   "pNInz6obpgDQGcFmaJgB",   # deep, male
-    "Antoni": "ErXwobaYiN019PkySvjV",   # well-rounded, male
-    "Elli":   "MF3mGyEYCl7XYWbV9V6O",   # emotional, female
-    "Josh":   "TxGEqnHWrfWFTfGW9XjX",   # deep, male
-    "Arnold": "VR6AewLTigWG4xSOukaG",   # crispy, male
 }
 
 _DEFAULT_VOICE_ID: str = (

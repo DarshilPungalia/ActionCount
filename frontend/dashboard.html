@@ -93,9 +93,127 @@
       line-height: 1;
     }
     .cal-day-num {
-      /* Shift the number up slightly to make room for the fire */
       transform: translateY(-3px);
       display: inline-block;
+    }
+
+    /* ── Premium Badge Cards ────────────────────────────────────────── */
+    .badge-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 18px 12px 14px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      cursor: default;
+      overflow: hidden;
+      transition: transform 0.25s, box-shadow 0.25s;
+      text-align: center;
+    }
+    .badge-card:hover { transform: translateY(-3px); }
+
+    /* Earned state */
+    .badge-card.earned {
+      background: linear-gradient(145deg, rgba(99,102,241,0.12), rgba(139,92,246,0.08));
+      border-color: rgba(99,102,241,0.35);
+      box-shadow: 0 0 0 0 rgba(99,102,241,0.4);
+      animation: badgePulse 3s ease-in-out infinite;
+    }
+    @keyframes badgePulse {
+      0%,100% { box-shadow: 0 0 10px 0 rgba(99,102,241,0.25); }
+      50%      { box-shadow: 0 0 22px 4px rgba(99,102,241,0.45); }
+    }
+    /* Shimmer sweep on earned */
+    .badge-card.earned::before {
+      content: '';
+      position: absolute;
+      top: -40%; left: -60%;
+      width: 50%; height: 180%;
+      background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.08) 50%, transparent 60%);
+      animation: badgeShimmer 3.5s ease-in-out infinite;
+      pointer-events: none;
+    }
+    @keyframes badgeShimmer {
+      0%   { left: -60%; }
+      100% { left: 160%; }
+    }
+
+    /* Locked state */
+    .badge-card.locked {
+      background: rgba(255,255,255,0.025);
+      border-color: rgba(255,255,255,0.06);
+      filter: grayscale(0.6);
+      opacity: 0.65;
+    }
+    .badge-card.locked:hover { transform: none; }
+
+    /* Badge icon wrapper */
+    .badge-icon-wrap {
+      font-size: 2.2rem;
+      line-height: 1;
+      filter: drop-shadow(0 0 8px rgba(139,92,246,0.5));
+      transition: transform 0.3s;
+    }
+    .badge-card.earned .badge-icon-wrap { animation: iconBounce 2s ease-in-out infinite; }
+    @keyframes iconBounce {
+      0%,100% { transform: translateY(0) scale(1); }
+      50%      { transform: translateY(-4px) scale(1.08); }
+    }
+    .badge-card.locked .badge-icon-wrap { filter: grayscale(1); }
+
+    .badge-name {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #a5b4fc;
+    }
+    .badge-card.locked .badge-name { color: #374151; }
+
+    .badge-desc {
+      font-size: 0.65rem;
+      color: #6b7280;
+      line-height: 1.4;
+      max-width: 90px;
+    }
+
+    /* Progress bar inside locked card */
+    .badge-progress {
+      width: 100%;
+      height: 4px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 99px;
+      overflow: hidden;
+      margin-top: 2px;
+    }
+    .badge-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #6366f1, #8b5cf6);
+      border-radius: 99px;
+      transition: width 1s cubic-bezier(0.4,0,0.2,1);
+    }
+    .badge-pct {
+      font-size: 0.6rem;
+      color: #4b5563;
+      font-weight: 600;
+    }
+
+    /* NEW badge pop-in */
+    .badge-card.new-earn {
+      animation: badgeNewPop 0.6s cubic-bezier(0.34,1.56,0.64,1) both !important;
+    }
+    @keyframes badgeNewPop {
+      from { transform: scale(0.5); opacity: 0; }
+      to   { transform: scale(1);   opacity: 1; }
+    }
+
+    /* Confetti canvas */
+    #confetti-canvas {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 9999;
     }
   </style>
 </head>
@@ -137,16 +255,14 @@
     <p class="text-slate-400 text-sm">Track your progress, celebrate consistency</p>
   </div>
 
-  <!-- Badge Strip -->
-  <div class="badge-strip anim-up" id="badgeStrip" style="margin-bottom:20px;"></div>
+  <!-- 4-col grid: 3 main + 1 badge sidebar -->
+  <div class="grid grid-cols-1 xl:grid-cols-4 gap-6">
 
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-
-    <!-- ── Left: Calendar ───────────────────────────────────────────────── -->
-    <div class="lg:col-span-2 space-y-6">
+    <!-- Left 3 columns -->
+    <div class="xl:col-span-3">
 
       <!-- Month Stats Summary -->
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 anim-up d100">
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 anim-up d100 mb-6">
         <div class="glass p-4 text-center">
           <div class="text-2xl font-extrabold text-emerald-400" id="totalWorkoutDays">—</div>
           <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Days Trained</div>
@@ -164,6 +280,12 @@
           <div class="text-xs text-slate-500 mt-1 uppercase tracking-wide">Calories Burnt</div>
         </div>
       </div>
+
+      <!-- Inner 3-col sub-grid: calendar(2) + muscle stats(1) -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+      <!-- calendar col: 2 wide -->
+      <div class="lg:col-span-2 space-y-6">
 
       <!-- Calendar card -->
       <div class="glass p-6 anim-up d200">
@@ -191,9 +313,9 @@
         <div class="grid grid-cols-7 gap-1" id="calGrid"></div>
       </div>
 
-    </div>
+    </div><!-- end calendar col -->
 
-    <!-- ── Right: Muscle Stats ───────────────────────────────────────────── -->
+    <!-- ── Right: Muscle Stats ──────────────────────────────────────────── -->
     <div class="space-y-6">
 
       <!-- Muscle bar chart -->
@@ -218,8 +340,28 @@
         <div id="muscleHeatmap"></div>
       </div>
 
+    </div><!-- end muscle stats col -->
+
+    </div><!-- end lg:grid inner -->
+    <!-- end left-3-cols -->
+
+    <!-- ── Badge Sidebar ─────────────────────────────────────────── -->
+    <div class="xl:col-span-1">
+      <div class="glass p-5 anim-right d200 sticky top-20">
+        <div class="flex items-center gap-2 mb-4">
+          <span style="font-size:1.3rem;">🏆</span>
+          <div>
+            <h3 class="text-sm font-bold text-white">Achievements</h3>
+            <p class="text-xs text-slate-500" id="badgeEarnedCount">Loading…</p>
+          </div>
+        </div>
+        <!-- Badge grid: 2 columns -->
+        <div class="grid grid-cols-2 gap-3" id="badgeStrip"></div>
+      </div>
     </div>
+
   </div>
+  <!-- end outer grid -->
 
   <!-- Volume chart (full width) -->
   <div class="glass p-6 mt-6 anim-up d300" id="volumeSection" style="display:none;">
@@ -229,6 +371,16 @@
     </div>
   </div>
 </main>
+
+<!-- Dashboard toast -->
+<div id="dash-toast" style="
+  position:fixed;bottom:28px;right:28px;z-index:9998;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6);
+  color:#fff;padding:12px 20px;border-radius:14px;
+  font-size:0.88rem;font-weight:700;
+  opacity:0;transform:translateY(16px);
+  transition:all 0.3s;pointer-events:none;
+  box-shadow:0 8px 32px rgba(99,102,241,0.4);"></div>
 
 <!-- ─── Workout Detail Modal ─────────────────────────────────────────────── -->
 <div id="workoutModal" class="modal-overlay" onclick="closeModal(event)">
@@ -302,6 +454,19 @@
     if (!event || event.target === document.getElementById('rest-day-modal-overlay'))
       document.getElementById('rest-day-modal-overlay').classList.remove('open');
   }
+
+  window.showDashboardToast = function(msg) {
+    const t = document.getElementById('dash-toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.style.opacity = '1';
+    t.style.transform = 'translateY(0)';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => {
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(16px)';
+    }, 4000);
+  };
 </script>
 <script src="/static/js/dashboard.js"></script>
 

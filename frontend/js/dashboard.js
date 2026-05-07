@@ -407,28 +407,43 @@ function renderVolumeChart() {
 }
 
 // ── Achievement Badges ────────────────────────────────────────────────────────
+const BADGES_KEY = 'ac_earned_badges';
+
 const BADGES = [
   {
-    id:    "streak7",
-    icon:  "🔥",
-    label: "7-Day Streak",
-    tip:   "Earned: worked out 7 days in a row",
-    check: () => _streakDates.size >= 7,
+    id:        "streak7",
+    icon:      "🔥",
+    label:     "On Fire",
+    desc:      "7-day streak",
+    fullDesc:  "Work out 7 days in a row",
+    color:     "#f97316",
+    glow:      "rgba(249,115,22,0.4)",
+    check:     () => _streakDates.size >= 7,
+    progress:  () => ({ val: Math.min(_streakDates.size, 7), max: 7 }),
   },
   {
-    id:    "sets100",
-    icon:  "💪",
-    label: "100 Sets",
-    tip:   "Earned: completed 100+ total sets this month",
-    check: () => Object.values(muscleStats).reduce((a,b) => a+b, 0) >= 100,
+    id:        "sets100",
+    icon:      "💪",
+    label:     "Iron Will",
+    desc:      "100 total sets",
+    fullDesc:  "Complete 100+ sets this month",
+    color:     "#6366f1",
+    glow:      "rgba(99,102,241,0.4)",
+    check:     () => Object.values(muscleStats).reduce((a,b) => a+b, 0) >= 100,
+    progress:  () => ({
+      val: Math.min(Object.values(muscleStats).reduce((a,b) => a+b, 0), 100),
+      max: 100,
+    }),
   },
   {
-    id:    "variety5",
-    icon:  "🌐",
-    label: "5 Muscle Groups",
-    tip:   "Earned: trained 5+ different muscle groups this week",
-    check: () => {
-      // Look at last 7 days in workoutHistory
+    id:        "variety5",
+    icon:      "🌐",
+    label:     "All-Round",
+    desc:      "5 muscle groups/week",
+    fullDesc:  "Train 5+ muscle groups in one week",
+    color:     "#10b981",
+    glow:      "rgba(16,185,129,0.4)",
+    check:     () => {
       const DAY_MS = 86400000;
       const todayMs = new Date(fmtDate(new Date())).getTime();
       const groups = new Set();
@@ -443,20 +458,191 @@ const BADGES = [
       }
       return groups.size >= 5;
     },
+    progress: () => {
+      const DAY_MS = 86400000;
+      const todayMs = new Date(fmtDate(new Date())).getTime();
+      const groups = new Set();
+      for (let i = 0; i < 7; i++) {
+        const ds = fmtDate(new Date(todayMs - i * DAY_MS));
+        const exs = workoutHistory[ds];
+        if (!exs) continue;
+        Object.keys(exs).forEach(ex => {
+          const g = EXERCISE_MUSCLE_MAP[ex];
+          if (g) groups.add(g);
+        });
+      }
+      return { val: Math.min(groups.size, 5), max: 5 };
+    },
+  },
+  {
+    id:        "days14",
+    icon:      "⚡",
+    label:     "Unstoppable",
+    desc:      "14-day streak",
+    fullDesc:  "Work out 14 days in a row",
+    color:     "#f59e0b",
+    glow:      "rgba(245,158,11,0.4)",
+    check:     () => _streakDates.size >= 14,
+    progress:  () => ({ val: Math.min(_streakDates.size, 14), max: 14 }),
   },
 ];
 
+// ── Confetti burst ────────────────────────────────────────────────────────────
+function launchConfetti() {
+  let canvas = document.getElementById('confetti-canvas');
+  if (!canvas) {
+    canvas = document.createElement('canvas');
+    canvas.id = 'confetti-canvas';
+    document.body.appendChild(canvas);
+  }
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  const ctx      = canvas.getContext('2d');
+  const COLORS   = ['#6366f1','#8b5cf6','#f97316','#10b981','#f59e0b','#ec4899','#34d399','#a5b4fc'];
+  const TOTAL    = 160;
+  const particles = [];
+
+  for (let i = 0; i < TOTAL; i++) {
+    particles.push({
+      x:    Math.random() * canvas.width,
+      y:    Math.random() * canvas.height * 0.4 - canvas.height * 0.1,
+      vx:   (Math.random() - 0.5) * 6,
+      vy:   Math.random() * -8 - 4,
+      size: Math.random() * 8 + 4,
+      rot:  Math.random() * 360,
+      rspd: (Math.random() - 0.5) * 8,
+      clr:  COLORS[Math.floor(Math.random() * COLORS.length)],
+      life: 1,
+      shape: Math.random() > 0.5 ? 'rect' : 'circle',
+    });
+  }
+
+  let frame;
+  function tick() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    let alive = false;
+    for (const p of particles) {
+      p.x  += p.vx;
+      p.y  += p.vy;
+      p.vy += 0.22;
+      p.rot += p.rspd;
+      p.life -= 0.012;
+      if (p.life <= 0) continue;
+      alive = true;
+      ctx.globalAlpha = Math.max(0, p.life);
+      ctx.fillStyle = p.clr;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot * Math.PI / 180);
+      if (p.shape === 'rect') {
+        ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    if (alive) { frame = requestAnimationFrame(tick); }
+    else { ctx.clearRect(0, 0, canvas.width, canvas.height); }
+  }
+  frame = requestAnimationFrame(tick);
+  // Safety cleanup after 5s
+  setTimeout(() => { cancelAnimationFrame(frame); ctx.clearRect(0, 0, canvas.width, canvas.height); }, 5000);
+}
+
+// ── Render badges ─────────────────────────────────────────────────────────────
 function renderBadges() {
   const strip = document.getElementById("badgeStrip");
   if (!strip) return;
-  strip.innerHTML = BADGES.map(b => {
+
+  // Load previously earned IDs from localStorage
+  let prevEarned;
+  try { prevEarned = new Set(JSON.parse(localStorage.getItem(BADGES_KEY) || '[]')); }
+  catch (_) { prevEarned = new Set(); }
+
+  const nowEarned = new Set();
+  const newlyEarned = [];
+
+  strip.innerHTML = '';
+
+  BADGES.forEach((b, idx) => {
     const earned = b.check();
-    return `<div class="badge ${earned ? 'earned' : 'locked'}" data-tip="${b.tip}">
-      <span class="badge-icon">${b.icon}</span>
-      <span class="badge-label">${b.label}</span>
-      ${earned ? '' : '<span style="font-size:0.65rem;opacity:0.5;">🔒</span>'}
-    </div>`;
-  }).join("");
+    if (earned) nowEarned.add(b.id);
+
+    const prog = b.progress();
+    const pct  = Math.round((prog.val / prog.max) * 100);
+
+    const card = document.createElement('div');
+    card.className = 'badge-card ' + (earned ? 'earned' : 'locked');
+    card.title = b.fullDesc;
+
+    // Unique glow color per badge when earned
+    if (earned) {
+      card.style.setProperty('--badge-glow', b.glow);
+      card.style.borderColor = earned ? b.color.replace(')', ',0.35)').replace('rgb', 'rgba') : '';
+      card.style.animation = `badgePulse 3s ease-in-out infinite`;
+    }
+
+    card.innerHTML = `
+      <div class="badge-icon-wrap" style="${earned ? `filter:drop-shadow(0 0 10px ${b.glow})` : ''}">${b.icon}</div>
+      <div class="badge-name" style="${earned ? `color:${b.color}` : ''}">${b.label}</div>
+      <div class="badge-desc">${b.desc}</div>
+      ${!earned ? `
+        <div class="badge-progress" style="width:100%;">
+          <div class="badge-progress-fill" id="bpf-${b.id}" style="width:0%;background:linear-gradient(90deg,${b.color},${b.glow.replace('0.4','0.8')})"></div>
+        </div>
+        <div class="badge-pct">${prog.val}/${prog.max}</div>
+      ` : `
+        <div style="font-size:0.6rem;font-weight:700;letter-spacing:0.08em;color:${b.color};opacity:0.8;text-transform:uppercase;">Unlocked ✓</div>
+      `}
+    `;
+    strip.appendChild(card);
+
+    // Animate progress bar fill after paint
+    if (!earned) {
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          const fill = document.getElementById(`bpf-${b.id}`);
+          if (fill) fill.style.width = pct + '%';
+        }, 200 + idx * 80);
+      });
+    }
+
+    // Detect newly earned
+    if (earned && !prevEarned.has(b.id)) {
+      newlyEarned.push({ card, b });
+    }
+  });
+
+  // Update count label
+  const countEl = document.getElementById('badgeEarnedCount');
+  if (countEl) {
+    const n = nowEarned.size;
+    countEl.textContent = n === 0
+      ? 'None earned yet — keep going!'
+      : `${n} / ${BADGES.length} earned`;
+  }
+
+  // Persist earned state
+  try { localStorage.setItem(BADGES_KEY, JSON.stringify([...nowEarned])); } catch (_) {}
+
+  // Fire confetti + pop animation for newly earned badges
+  if (newlyEarned.length > 0) {
+    setTimeout(() => {
+      newlyEarned.forEach(({ card }) => {
+        card.classList.add('new-earn');
+        card.addEventListener('animationend', () => card.classList.remove('new-earn'), { once: true });
+      });
+      launchConfetti();
+      // Toast for each new badge
+      newlyEarned.forEach(({ b }) => {
+        if (window.showDashboardToast) window.showDashboardToast(`🏆 Badge unlocked: ${b.label}!`);
+      });
+    }, 600);
+  }
 }
 
 // ── Rest-Day Warning ───────────────────────────────────────────────────────────

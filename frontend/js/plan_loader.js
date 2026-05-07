@@ -232,27 +232,49 @@ const PlanLoader = (() => {
   }
 
   // ── Banner DOM ───────────────────────────────────────────────────────────────
+  let _dropdownOpen = false;
+
   function _buildBanner() {
     if (_bannerEl) return;
+
+    // ── Outer wrapper (pill-like banner) ─────────────────────────────────────
     _bannerEl = document.createElement('div');
     _bannerEl.id = 'plan-banner';
     Object.assign(_bannerEl.style, {
-      position:       'fixed',
-      top:            '58px',
-      left:           '16px',
-      zIndex:         '65',
-      display:        'none',
-      flexDirection:  'column',
-      gap:            '3px',
-      background:     'rgba(10,14,26,0.78)',
-      backdropFilter: 'blur(12px)',
-      border:         '1px solid rgba(99,102,241,0.22)',
-      borderRadius:   '10px',
-      padding:        '10px 14px',
-      fontFamily:     '\'Inter\', sans-serif',
-      pointerEvents:  'none',
-      userSelect:     'none',
-      maxWidth:       '260px',
+      position:        'fixed',
+      top:             '16px',
+      left:            '50%',
+      transform:       'translateX(-50%)',
+      zIndex:          '65',
+      display:         'none',
+      flexDirection:   'column',
+      alignItems:      'stretch',
+      gap:             '0',
+      background:      'rgba(10,14,26,0.88)',
+      backdropFilter:  'blur(18px)',
+      border:          '1px solid rgba(99,102,241,0.30)',
+      borderRadius:    '14px',
+      padding:         '0',
+      fontFamily:      '\'Inter\', sans-serif',
+      pointerEvents:   'auto',            // ← clickable now
+      userSelect:      'none',
+      minWidth:        '240px',
+      maxWidth:        '360px',
+      textAlign:       'center',
+      boxShadow:       '0 6px 28px rgba(99,102,241,0.18)',
+      cursor:          'pointer',
+      overflow:        'hidden',
+    });
+
+    // ── Clickable header row ──────────────────────────────────────────────────
+    const headerEl = document.createElement('div');
+    headerEl.id = 'plan-banner-header';
+    Object.assign(headerEl.style, {
+      display:         'flex',
+      flexDirection:   'column',
+      alignItems:      'center',
+      gap:             '2px',
+      padding:         '9px 18px 8px',
     });
 
     const planTitle = document.createElement('div');
@@ -260,7 +282,7 @@ const PlanLoader = (() => {
     Object.assign(planTitle.style, {
       fontSize:      '9px',
       fontWeight:    '700',
-      letterSpacing: '0.12em',
+      letterSpacing: '0.13em',
       textTransform: 'uppercase',
       color:         'rgba(165,180,252,0.65)',
     });
@@ -270,7 +292,7 @@ const PlanLoader = (() => {
     Object.assign(planBody.style, {
       fontSize:   '13px',
       fontWeight: '700',
-      color:      'rgba(255,255,255,0.9)',
+      color:      'rgba(255,255,255,0.92)',
     });
 
     const planSub = document.createElement('div');
@@ -282,10 +304,178 @@ const PlanLoader = (() => {
       marginTop:  '1px',
     });
 
-    _bannerEl.appendChild(planTitle);
-    _bannerEl.appendChild(planBody);
-    _bannerEl.appendChild(planSub);
+    // Chevron hint
+    const chevronEl = document.createElement('div');
+    chevronEl.id = 'plan-banner-chevron';
+    Object.assign(chevronEl.style, {
+      fontSize:        '9px',
+      color:           'rgba(99,102,241,0.55)',
+      marginTop:       '4px',
+      letterSpacing:   '0.05em',
+      transition:      'transform 0.25s',
+    });
+    chevronEl.textContent = '▼ tap for full plan';
+
+    headerEl.appendChild(planTitle);
+    headerEl.appendChild(planBody);
+    headerEl.appendChild(planSub);
+    headerEl.appendChild(chevronEl);
+
+    // ── Dropdown panel ────────────────────────────────────────────────────────
+    const dropEl = document.createElement('div');
+    dropEl.id = 'plan-banner-drop';
+    Object.assign(dropEl.style, {
+      maxHeight:        '0',
+      overflow:         'hidden',
+      transition:       'max-height 0.32s cubic-bezier(0.4,0,0.2,1), opacity 0.25s',
+      opacity:          '0',
+      borderTop:        '0px solid rgba(99,102,241,0.15)',
+    });
+
+    const dropInner = document.createElement('div');
+    dropInner.id = 'plan-banner-drop-inner';
+    Object.assign(dropInner.style, {
+      padding:    '8px 12px 12px',
+      display:    'flex',
+      flexDirection: 'column',
+      gap:        '5px',
+    });
+
+    dropEl.appendChild(dropInner);
+
+    _bannerEl.appendChild(headerEl);
+    _bannerEl.appendChild(dropEl);
     document.body.appendChild(_bannerEl);
+
+    // ── Toggle handler ────────────────────────────────────────────────────────
+    _bannerEl.addEventListener('click', () => {
+      _dropdownOpen = !_dropdownOpen;
+      const chevron = document.getElementById('plan-banner-chevron');
+      if (_dropdownOpen) {
+        dropEl.style.maxHeight     = '320px';
+        dropEl.style.opacity       = '1';
+        dropEl.style.borderTopWidth = '1px';
+        if (chevron) {
+          chevron.textContent = '▲ collapse';
+          chevron.style.color = 'rgba(165,180,252,0.7)';
+        }
+        _renderDropdown();
+      } else {
+        dropEl.style.maxHeight     = '0';
+        dropEl.style.opacity       = '0';
+        dropEl.style.borderTopWidth = '0px';
+        if (chevron) {
+          chevron.textContent = '▼ tap for full plan';
+          chevron.style.color = 'rgba(99,102,241,0.55)';
+        }
+      }
+    });
+  }
+
+  // ── Dropdown content ──────────────────────────────────────────────────────────
+  const EXERCISE_EMOJIS = {
+    squat:'🦵', pushup:'💪', bicep_curl:'🏋️', pullup:'🤸',
+    lateral_raise:'↔️', overhead_press:'⬆️', situp:'🧘',
+    crunch:'⚡', leg_raise:'🦶', knee_raise:'🦵', knee_press:'🔽',
+  };
+
+  function _renderDropdown() {
+    const inner = document.getElementById('plan-banner-drop-inner');
+    if (!inner) return;
+    inner.innerHTML = '';
+
+    // Label row
+    const label = document.createElement('div');
+    Object.assign(label.style, {
+      fontSize:      '9px',
+      fontWeight:    '700',
+      letterSpacing: '0.12em',
+      textTransform: 'uppercase',
+      color:         'rgba(99,102,241,0.6)',
+      marginBottom:  '4px',
+      textAlign:     'left',
+    });
+    label.textContent = 'Remaining Sets';
+    inner.appendChild(label);
+
+    if (_currentIdx >= _queue.length) {
+      const done = document.createElement('div');
+      done.style.cssText = 'font-size:12px;color:rgba(52,211,153,0.9);text-align:center;padding:8px 0;';
+      done.textContent = '🎉 All sets complete!';
+      inner.appendChild(done);
+      return;
+    }
+
+    // Render from currentIdx onward — group by exercise
+    let lastKey = null;
+    for (let i = _currentIdx; i < _queue.length; i++) {
+      const q   = _queue[i];
+      const isCurrent = i === _currentIdx;
+
+      const row = document.createElement('div');
+      Object.assign(row.style, {
+        display:         'flex',
+        alignItems:      'center',
+        gap:             '8px',
+        padding:         '5px 8px',
+        borderRadius:    '8px',
+        background:      isCurrent
+          ? 'rgba(99,102,241,0.18)'
+          : 'rgba(255,255,255,0.03)',
+        border:          isCurrent
+          ? '1px solid rgba(99,102,241,0.35)'
+          : '1px solid rgba(255,255,255,0.05)',
+        transition:      'background 0.15s',
+      });
+
+      // Emoji
+      const emojiEl = document.createElement('span');
+      emojiEl.style.cssText = 'font-size:14px;flex-shrink:0;';
+      emojiEl.textContent = EXERCISE_EMOJIS[q.exercise_key] || '🏋️';
+
+      // Info block
+      const info = document.createElement('div');
+      info.style.cssText = 'flex:1;min-width:0;text-align:left;';
+
+      const nameLine = document.createElement('div');
+      Object.assign(nameLine.style, {
+        fontSize:   '11px',
+        fontWeight: '700',
+        color:      isCurrent ? 'rgba(165,180,252,0.95)' : 'rgba(255,255,255,0.75)',
+        whiteSpace: 'nowrap',
+        overflow:   'hidden',
+        textOverflow: 'ellipsis',
+      });
+      nameLine.textContent = (isCurrent ? '▶ ' : '') + q.exerciseLabel;
+
+      const metaLine = document.createElement('div');
+      metaLine.style.cssText = 'font-size:9.5px;color:rgba(100,116,139,0.9);margin-top:1px;';
+      const wt = q.weightKg > 0 ? ` · ${q.weightKg} kg` : '';
+      metaLine.textContent = `Set ${q.setIndex}/${q.totalSets} · ${q.targetReps} reps${wt}`;
+
+      info.appendChild(nameLine);
+      info.appendChild(metaLine);
+
+      // Set badge
+      const badge = document.createElement('div');
+      Object.assign(badge.style, {
+        fontSize:      '9px',
+        fontWeight:    '700',
+        padding:       '2px 6px',
+        borderRadius:  '999px',
+        background:    isCurrent ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.06)',
+        color:         isCurrent ? '#a5b4fc' : 'rgba(100,116,139,0.8)',
+        flexShrink:    '0',
+      });
+      badge.textContent = `${q.exerciseIndex}/${q.totalExercises}`;
+
+      row.appendChild(emojiEl);
+      row.appendChild(info);
+      row.appendChild(badge);
+      inner.appendChild(row);
+
+      lastKey = q.exercise_key;
+    }
   }
 
   function _renderBanner() {
@@ -300,6 +490,7 @@ const PlanLoader = (() => {
       if (bodyEl)  bodyEl.textContent  = '✅ Workout Complete!';
       if (subEl)   subEl.textContent   = 'Great job today!';
       _bannerEl.style.display = 'flex';
+      if (_dropdownOpen) _renderDropdown();
       return;
     }
 
@@ -310,6 +501,9 @@ const PlanLoader = (() => {
       subEl.textContent = `Set ${item.setIndex}/${item.totalSets}  ·  Target: ${item.targetReps} reps${weightStr}`;
     }
     _bannerEl.style.display = 'flex';
+
+    // Refresh dropdown content if open
+    if (_dropdownOpen) _renderDropdown();
   }
 
   // ── Weight input watcher ─────────────────────────────────────────────────────
