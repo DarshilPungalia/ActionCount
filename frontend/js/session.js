@@ -230,14 +230,7 @@ function updateHUD(data) {
     _pendingPosture = postureMsg;
     _postureTimer   = setTimeout(() => _commitPosture(_pendingPosture), POSTURE_DEBOUNCE_MS);
   }
-
-  // Legacy angle arc
-  const angle = data.angle ?? null;
-  if (arcFill) {
-    arcFill.style.strokeDashoffset = (angle !== null)
-      ? 172 * (1 - Math.min(angle / 180, 1))
-      : 172;
-  }
+  // (Angle arc removed — Angle row no longer displayed in HUD overlay)
 }
 
 function setStatus(state, label) {

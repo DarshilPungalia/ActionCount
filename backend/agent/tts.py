@@ -28,11 +28,8 @@ from typing import Optional
 
 _TAG = "[FridayTTS/ElevenLabs]"
 
-# ── ElevenLabs voice catalogue ────────────────────────────────────────────────
-# Only FREE premade voices are listed here — library/cloned voices require a
-# paid subscription. Set ELEVENLABS_VOICE_ID in .env to use your own voice.
+
 VOICES: dict[str, str] = {
-    # ElevenLabs built-in premade voices (free on all plans)
     "Rachel": "21m00Tcm4TlvDq8ikWAM",   # calm, female
     "Adam":   "pNInz6obpgDQGcFmaJgB",   # deep, male
     "Antoni": "ErXwobaYiN019PkySvjV",   # well-rounded, male
@@ -50,11 +47,11 @@ _API_KEY: Optional[str] = os.getenv("ELEVENLABS_API_KEY")
 
 _EL_BASE   = "https://api.elevenlabs.io/v1"
 _MODEL_ID  = "eleven_multilingual_v2"
-_CHUNK_SZ  = 4096   # bytes per read from the streaming response
+_CHUNK_SZ  = 4096   
 
 # ── Global stop flag for barge-in support ────────────────────────────────────
 _stop_event = threading.Event()
-_speaking   = threading.Event()   # set while a speak() call is active
+_speaking   = threading.Event()   
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────────

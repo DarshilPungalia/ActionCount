@@ -14,7 +14,7 @@ Both voice (/ws/friday) and text (/api/chat) invoke this graph with
 so all state — conversation history, diet plans, workout plans, calorie logs — is shared.
 
 Channel-aware output:
-  voice → 1-2 sentences, no markdown, speakable prose → piped to Kokoro TTS
+  voice → 1-2 sentences, no markdown, speakable prose → piped to TTS
   text  → full markdown allowed → returned to chatbot UI
 """
 

@@ -21,23 +21,41 @@ const MUSCLE_COLORS = {
 };
 const MUSCLE_ORDER = ["Arms","Chest","Back","Legs","Shoulders","Core"];
 
-// Fine-grained colours for the SVG heatmap paths
-const FINE_MUSCLE_COLORS = {
-  Bicep:     "#6366f1",  // indigo
-  Triceps:   "#8b5cf6",  // violet
-  Forearms:  "#a78bfa",  // light purple
-  Chest:     "#ef4444",  // red
-  Delts:     "#3b82f6",  // blue
-  Lats:      "#f59e0b",  // amber
-  Traps:     "#f97316",  // orange
-  Rhomboids: "#fb923c",  // light orange
-  Core:      "#8b5cf6",  // violet
-  Quads:     "#10b981",  // emerald
-  Hamstrings:"#059669",  // dark emerald
-  Calfs:     "#34d399",  // light green
-  Glutes:    "#06b6d4",  // cyan
-  Adductors: "#0ea5e9",  // sky blue
-};
+// Single accent colour for the SVG heatmap — opacity varies with frequency
+const HEATMAP_COLOR = { r: 249, g: 115, b: 22 };  // vibrant orange (#f97316)
+
+// Fine-grained muscle names that are mapped in paths.json
+const FINE_MUSCLE_NAMES = [
+  "Bicep","Triceps","Forearms","Chest","Delts","Lats",
+  "Traps","Rhomboids","Core","Quads","Hamstrings","Calfs","Glutes","Adductors"
+];
+
+// ── Streak helpers ──────────────────────────────────────────────────────────────
+/**
+ * Returns a Set of date strings ("YYYY-MM-DD") that form the current
+ * active streak — the longest unbroken run of workout days ending on
+ * today or yesterday (to account for users who haven't worked out yet today).
+ */
+function computeStreakDates(history) {
+  const allDates = Object.keys(history).sort(); // ascending
+  if (!allDates.length) return new Set();
+
+  const todayMs  = new Date(fmtDate(new Date())).getTime();
+  const DAY_MS   = 86400000;
+
+  // Walk backward from today to find the streak
+  let streakDates = [];
+  let cursor = todayMs;
+
+  // Allow starting from yesterday if there's no workout today
+  if (!history[fmtDate(new Date(cursor))]) cursor -= DAY_MS;
+
+  while (history[fmtDate(new Date(cursor))]) {
+    streakDates.push(fmtDate(new Date(cursor)));
+    cursor -= DAY_MS;
+  }
+  return new Set(streakDates);
+}
 
 const EXERCISE_MUSCLE_MAP = {
   "Bicep Curl":"Arms","Push-Up":"Chest","Push Up":"Chest",
@@ -82,6 +100,8 @@ async function loadAll() {
     renderRadar();
     renderHeatmap();
     renderVolumeChart();
+    renderBadges();
+    checkRestDayWarning();
   } catch (err) {
     console.error("Dashboard load failed:", err);
   }
@@ -103,11 +123,18 @@ function changeMonth(delta) {
 }
 
 // ── Calendar ──────────────────────────────────────────────────────────────────
+let _streakDates = new Set();
+
 function renderCalendar() {
   const label = document.getElementById("calMonthLabel");
   const grid  = document.getElementById("calGrid");
   label.textContent = currentDate.toLocaleDateString("en-US",{month:"long",year:"numeric"});
   grid.innerHTML = "";
+
+  // Compute streak from the full workout history (all-time, not month-scoped)
+  _streakDates = computeStreakDates(workoutHistory);
+  renderStreakBanner(_streakDates.size);
+
   const year=currentDate.getFullYear(), month=currentDate.getMonth(), today=fmtDate(new Date());
   const firstDay=new Date(year,month,1).getDay(), daysInMonth=new Date(year,month+1,0).getDate();
   const prevDays=new Date(year,month,0).getDate();
@@ -119,13 +146,49 @@ function renderCalendar() {
   const rem=(firstDay+daysInMonth)%7===0?0:7-(firstDay+daysInMonth)%7;
   for(let i=1;i<=rem;i++) grid.appendChild(makeCalDay(i,false,true));
 }
-function makeCalDay(num,isToday,isOther,hasWorkout=false,dateStr=null){
-  const el=document.createElement("div"); el.className="cal-day";
-  if(isToday) el.classList.add("today");
-  if(isOther) el.classList.add("other-month");
-  if(hasWorkout) el.classList.add("has-workout");
-  el.innerHTML=`<span>${num}</span>${hasWorkout?'<span class="dot"></span>':""}`;
-  if(dateStr&&hasWorkout){el.addEventListener("click",()=>openModal(dateStr)); el.title="Click to see workout";}
+
+function renderStreakBanner(streakLen) {
+  const existing = document.getElementById("streakBanner");
+  if (existing) existing.remove();
+  if (streakLen < 2) return;
+  const calCard = document.querySelector(".glass.p-6.anim-up.d200");
+  if (!calCard) return;
+  const banner = document.createElement("div");
+  banner.id = "streakBanner";
+  banner.style.cssText = [
+    "display:flex;align-items:center;justify-content:center;gap:10px;",
+    "background:linear-gradient(135deg,rgba(249,115,22,0.15),rgba(239,68,68,0.10));",
+    "border:1px solid rgba(249,115,22,0.35);border-radius:0.75rem;",
+    "padding:10px 16px;margin-bottom:16px;",
+    "animation:fadeInUp 0.4s ease both;",
+  ].join("");
+  banner.innerHTML = `
+    <span style="font-size:1.5rem;display:inline-block;animation:firePulse 0.75s ease-in-out infinite alternate;">🔥</span>
+    <span style="font-weight:800;color:#fb923c;font-size:1rem;">${streakLen}-Day Streak!</span>
+    <span style="color:#9ca3af;font-size:0.78rem;">Keep the fire alive!</span>`;
+  calCard.insertBefore(banner, calCard.firstChild);
+}
+
+function makeCalDay(num, isToday, isOther, hasWorkout=false, dateStr=null) {
+  const el = document.createElement("div");
+  el.className = "cal-day";
+  if (isToday)   el.classList.add("today");
+  if (isOther)   el.classList.add("other-month");
+  if (hasWorkout) el.classList.add("has-workout");
+
+  const onStreak = !isOther && dateStr && _streakDates.has(dateStr);
+  if (onStreak) el.classList.add("on-streak");
+
+  if (onStreak) {
+    el.innerHTML = `<span class="cal-day-num">${num}</span><span class="fire-emoji">🔥</span>`;
+  } else {
+    el.innerHTML = `<span>${num}</span>${hasWorkout ? '<span class="dot"></span>' : ""}`;
+  }
+
+  if (dateStr && hasWorkout) {
+    el.addEventListener("click", () => openModal(dateStr));
+    el.title = onStreak ? "🔥 Streak day! Click to see workout" : "Click to see workout";
+  }
   return el;
 }
 
@@ -222,86 +285,88 @@ function renderHeatmap() {
   }
 
   // ── Compute max sets across all fine-grained muscles ──
-  const fineGroups = Object.keys(FINE_MUSCLE_COLORS);
-  const maxSets = Math.max(...fineGroups.map(g => muscleStats[g] || 0), 1);
+  const maxSets = Math.max(...FINE_MUSCLE_NAMES.map(g => muscleStats[g] || 0), 1);
+  const { r: hr, g: hg, b: hb } = HEATMAP_COLOR;
 
   // ── Inject SVG inline ──
-  // Wrap in a positioned div so we can add the legend below
   container.innerHTML = `
     <div id="svgWrap" style="width:100%;overflow:hidden;border-radius:10px;"></div>
-    <div id="heatLegend" style="display:flex;flex-wrap:wrap;gap:5px 10px;justify-content:center;margin-top:10px;"></div>`;
+    <div id="heatLegend" style="margin-top:12px;"></div>`;
 
   const svgWrap = document.getElementById("svgWrap");
   svgWrap.innerHTML = _svgText;
   const svgEl = svgWrap.querySelector("svg");
   if (!svgEl) return;
 
-  // Make SVG responsive and transparent
   svgEl.setAttribute("width", "100%");
   svgEl.removeAttribute("height");
-  svgEl.style.display = "block";
-  svgEl.style.background = "transparent";
-  // Ensure no white page background rectangle
   svgEl.setAttribute("style", "background:transparent;display:block;");
 
-  // ── Color each mapped path ──
-  const REST_COLOR = "rgba(255,255,255,0.07)";  // dim glass look for unused muscles
-
-  // First: set all named paths (those in paths.json) to rest color,
-  //        and override any white near-white fills on non-mapped paths too
+  // Silence background silhouette paths
   svgEl.querySelectorAll("path").forEach(path => {
     const fill = path.getAttribute("fill") || "";
-    // White/near-white fills are the background silhouette — make transparent
     if (/^#F[EF][EF][A-F0-9]{2}$/i.test(fill) || fill === "none" || fill === "") {
       path.style.fill = "transparent";
     }
   });
 
-  // Then: apply fine-grained muscle colors
+  const REST_COLOR = "rgba(255,255,255,0.07)";
+
+  // Apply single-colour + opacity approach
   Object.entries(_pathsMap).forEach(([pathId, muscleName]) => {
     const el = svgEl.getElementById(pathId);
     if (!el) return;
-    const sets  = muscleStats[muscleName] || 0;
-    const color = FINE_MUSCLE_COLORS[muscleName];
-    if (!color) { el.style.fill = REST_COLOR; return; }
+    const sets = muscleStats[muscleName] || 0;
     if (sets === 0) {
       el.style.fill = REST_COLOR;
+      el.style.cursor = "default";
     } else {
-      const alpha = (0.25 + 0.70 * (sets / maxSets)).toFixed(2);
-      const r = parseInt(color.slice(1,3),16);
-      const g = parseInt(color.slice(3,5),16);
-      const b = parseInt(color.slice(5,7),16);
-      el.style.fill = `rgba(${r},${g},${b},${alpha})`;
-    }
-    // Subtle stroke for definition
-    el.style.stroke = "rgba(255,255,255,0.08)";
-    el.style.strokeWidth = "0.5";
-    // Tooltip on hover
-    el.style.cursor = sets > 0 ? "pointer" : "default";
-    el.setAttribute("title", `${muscleName}: ${sets} set${sets!==1?"s":""}`);
-    if (sets > 0) {
+      // Opacity: low-frequency = 0.20, high-frequency = 0.90
+      const alpha = (0.20 + 0.70 * (sets / maxSets)).toFixed(2);
+      el.style.fill = `rgba(${hr},${hg},${hb},${alpha})`;
+      el.style.cursor = "pointer";
       el.addEventListener("mouseenter", function() {
-        this.style.filter = "brightness(1.4) drop-shadow(0 0 4px currentColor)";
+        this.style.filter = `drop-shadow(0 0 6px rgba(${hr},${hg},${hb},0.8))`;
+        this.style.fill   = `rgba(${hr},${hg},${hb},${Math.min(parseFloat(alpha)+0.15,1).toFixed(2)})`;
       });
       el.addEventListener("mouseleave", function() {
         this.style.filter = "";
+        this.style.fill   = `rgba(${hr},${hg},${hb},${alpha})`;
       });
     }
+    el.style.stroke      = "rgba(255,255,255,0.06)";
+    el.style.strokeWidth = "0.5";
+    el.setAttribute("title", `${muscleName}: ${sets} set${sets!==1?"s":""}`);
   });
 
-  // ── Legend: only muscles with activity ──
+  // ── Legend: opacity scale bar ──
   const legend = document.getElementById("heatLegend");
-  const active = fineGroups.filter(g => (muscleStats[g] || 0) > 0);
+  const active = FINE_MUSCLE_NAMES.filter(g => (muscleStats[g] || 0) > 0);
   if (active.length === 0) {
-    legend.innerHTML = `<span style="font-size:0.7rem;color:#4b5563;">No workouts this month</span>`;
+    legend.innerHTML = `<span style="font-size:0.7rem;color:#4b5563;display:block;text-align:center;">No workouts this month</span>`;
   } else {
-    legend.innerHTML = active.map(g => {
-      const c = FINE_MUSCLE_COLORS[g] || "#6366f1";
-      return `<span style="font-size:0.68rem;color:#9ca3af;display:flex;align-items:center;gap:3px;">
-        <span style="width:7px;height:7px;border-radius:50%;background:${c};display:inline-block;"></span>
-        ${g}: ${muscleStats[g]||0}
-      </span>`;
+    // Opacity scale bar
+    const scaleBar = `
+      <div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:8px;">
+        <span style="font-size:0.65rem;color:#6b7280;">Low</span>
+        <div style="width:80px;height:8px;border-radius:4px;
+          background:linear-gradient(to right,
+            rgba(${hr},${hg},${hb},0.20),
+            rgba(${hr},${hg},${hb},0.90));"></div>
+        <span style="font-size:0.65rem;color:#6b7280;">High</span>
+      </div>`;
+    // Active muscle chips
+    const chips = active.map(g => {
+      const sets = muscleStats[g] || 0;
+      const alpha = (0.20 + 0.70 * (sets / maxSets)).toFixed(2);
+      return `<span style="
+        font-size:0.67rem;color:#d1d5db;
+        background:rgba(${hr},${hg},${hb},${alpha});
+        border:1px solid rgba(${hr},${hg},${hb},0.3);
+        padding:2px 7px;border-radius:999px;">${g} <strong>${sets}</strong></span>`;
     }).join("");
+    legend.innerHTML = scaleBar +
+      `<div style="display:flex;flex-wrap:wrap;gap:5px;justify-content:center;">${chips}</div>`;
   }
 }
 
@@ -339,6 +404,117 @@ function renderVolumeChart() {
       },
     }
   });
+}
+
+// ── Achievement Badges ────────────────────────────────────────────────────────
+const BADGES = [
+  {
+    id:    "streak7",
+    icon:  "🔥",
+    label: "7-Day Streak",
+    tip:   "Earned: worked out 7 days in a row",
+    check: () => _streakDates.size >= 7,
+  },
+  {
+    id:    "sets100",
+    icon:  "💪",
+    label: "100 Sets",
+    tip:   "Earned: completed 100+ total sets this month",
+    check: () => Object.values(muscleStats).reduce((a,b) => a+b, 0) >= 100,
+  },
+  {
+    id:    "variety5",
+    icon:  "🌐",
+    label: "5 Muscle Groups",
+    tip:   "Earned: trained 5+ different muscle groups this week",
+    check: () => {
+      // Look at last 7 days in workoutHistory
+      const DAY_MS = 86400000;
+      const todayMs = new Date(fmtDate(new Date())).getTime();
+      const groups = new Set();
+      for (let i = 0; i < 7; i++) {
+        const ds = fmtDate(new Date(todayMs - i * DAY_MS));
+        const exs = workoutHistory[ds];
+        if (!exs) continue;
+        Object.keys(exs).forEach(ex => {
+          const g = EXERCISE_MUSCLE_MAP[ex];
+          if (g) groups.add(g);
+        });
+      }
+      return groups.size >= 5;
+    },
+  },
+];
+
+function renderBadges() {
+  const strip = document.getElementById("badgeStrip");
+  if (!strip) return;
+  strip.innerHTML = BADGES.map(b => {
+    const earned = b.check();
+    return `<div class="badge ${earned ? 'earned' : 'locked'}" data-tip="${b.tip}">
+      <span class="badge-icon">${b.icon}</span>
+      <span class="badge-label">${b.label}</span>
+      ${earned ? '' : '<span style="font-size:0.65rem;opacity:0.5;">🔒</span>'}
+    </div>`;
+  }).join("");
+}
+
+// ── Rest-Day Warning ───────────────────────────────────────────────────────────
+/**
+ * Check if any muscle group has been trained on 3+ consecutive days
+ * ending today or yesterday. If so, show a warning popup.
+ * Only shows once per dashboard load (not on month navigation).
+ */
+let _restDayShown = false;
+function checkRestDayWarning() {
+  if (_restDayShown) return;
+
+  const MUSCLE_TO_EXERCISE = {};
+  Object.entries(EXERCISE_MUSCLE_MAP).forEach(([ex, grp]) => {
+    if (!MUSCLE_TO_EXERCISE[grp]) MUSCLE_TO_EXERCISE[grp] = [];
+    MUSCLE_TO_EXERCISE[grp].push(ex);
+  });
+
+  const DAY_MS = 86400000;
+  const todayMs = new Date(fmtDate(new Date())).getTime();
+  const warned = [];
+
+  Object.keys(MUSCLE_TO_EXERCISE).forEach(group => {
+    const exNames = MUSCLE_TO_EXERCISE[group];
+    let consecutive = 0;
+    // Check last 4 days: if 3+ consecutive days have this group → warn
+    for (let i = 0; i < 4; i++) {
+      const ds = fmtDate(new Date(todayMs - i * DAY_MS));
+      const exs = workoutHistory[ds];
+      if (!exs) break;
+      const hit = exNames.some(e => exs[e]);
+      if (hit) consecutive++;
+      else break;
+    }
+    if (consecutive >= 3) warned.push({ group, days: consecutive });
+  });
+
+  if (!warned.length) return;
+
+  _restDayShown = true;
+  const body = document.getElementById("restDayModalBody");
+  const overlay = document.getElementById("rest-day-modal-overlay");
+  if (!body || !overlay) return;
+
+  body.innerHTML = warned.map(w =>
+    `<div style="margin-bottom:8px;">
+      <strong style="color:#f1f5f9;">${w.group}</strong> has been trained
+      <strong style="color:#fb923c;">${w.days} days in a row</strong>.
+      Consider giving it a rest today for optimal recovery and muscle growth.
+    </div>`
+  ).join("") +
+  `<div style="margin-top:12px;padding:10px 14px;border-radius:8px;
+    background:rgba(249,115,22,0.08);border:1px solid rgba(249,115,22,0.18);font-size:0.8rem;color:#6b7280;">
+    💡 <em>Rest days allow muscles to repair and grow stronger. Even light activity or stretching is fine.</em>
+  </div>`;
+
+  // Delay slightly so page animation plays first
+  setTimeout(() => overlay.classList.add("open"), 800);
 }
 
 // ── Modal ─────────────────────────────────────────────────────────────────────

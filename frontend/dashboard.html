@@ -66,9 +66,40 @@
     /* Stat bar */
     .stat-bar-track { background: rgba(255,255,255,0.06); border-radius: 999px; height: 8px; overflow: hidden; }
     .stat-bar-fill  { height: 100%; border-radius: 999px; transition: width 1s cubic-bezier(0.4,0,0.2,1); }
+
+    /* ── Streak fire animation ───────────────────────────────────── */
+    @keyframes firePulse {
+      from { transform: scale(1)    rotate(-6deg); filter: brightness(1);   }
+      to   { transform: scale(1.35) rotate(6deg);  filter: brightness(1.4); }
+    }
+    @keyframes streakGlow {
+      0%,100% { box-shadow: 0 0 0   0   rgba(249,115,22,0);    }
+      50%      { box-shadow: 0 0 14px 3px rgba(249,115,22,0.45); }
+    }
+    .cal-day.on-streak {
+      background: rgba(249,115,22,0.12) !important;
+      border-color: rgba(249,115,22,0.40) !important;
+      animation: streakGlow 1.8s ease-in-out infinite;
+    }
+    .cal-day.on-streak:hover {
+      background: rgba(249,115,22,0.22) !important;
+      border-color: rgba(249,115,22,0.65) !important;
+    }
+    .fire-emoji {
+      font-size: 1rem;
+      position: absolute;
+      bottom: 3px;
+      animation: firePulse 0.75s ease-in-out infinite alternate;
+      line-height: 1;
+    }
+    .cal-day-num {
+      /* Shift the number up slightly to make room for the fire */
+      transform: translateY(-3px);
+      display: inline-block;
+    }
   </style>
 </head>
-<body>
+<body class="page-enter">
 
 <!-- ─── Navbar ──────────────────────────────────────────────────────────── -->
 <nav class="sticky top-0 z-40 border-b border-white/[0.06]" style="background:rgba(10,14,26,0.85);backdrop-filter:blur(20px);">
@@ -101,10 +132,13 @@
 <main class="max-w-6xl mx-auto px-4 py-8">
 
   <!-- Header -->
-  <div class="mb-8 anim-up">
+  <div class="mb-6 anim-up">
     <h1 class="text-3xl font-extrabold text-white mb-1">Your Dashboard</h1>
     <p class="text-slate-400 text-sm">Track your progress, celebrate consistency</p>
   </div>
+
+  <!-- Badge Strip -->
+  <div class="badge-strip anim-up" id="badgeStrip" style="margin-bottom:20px;"></div>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -210,6 +244,42 @@
   </div>
 </div>
 
+<!-- ─── Rest-Day Warning Modal ─────────────────────────────────────────────── -->
+<div id="rest-day-modal-overlay" onclick="closeRestDayModal(event)">
+  <div id="rest-day-modal-box" onclick="event.stopPropagation()">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+      <span style="font-size:2rem;">🌡️</span>
+      <div>
+        <h3 style="font-size:1.1rem;font-weight:800;color:#fb923c;margin:0;">Rest Day Recommended</h3>
+        <p style="font-size:0.78rem;color:#6b7280;margin:2px 0 0;">Recovery is part of the plan</p>
+      </div>
+      <button onclick="closeRestDayModal()"
+        style="margin-left:auto;background:none;border:none;color:#4b5563;font-size:1.2rem;cursor:pointer;transition:color 0.15s;"
+        onmouseover="this.style.color='#f1f5f9'" onmouseout="this.style.color='#4b5563'">✕</button>
+    </div>
+    <div id="restDayModalBody"
+      style="font-size:0.88rem;color:#94a3b8;line-height:1.7;margin-bottom:20px;"></div>
+    <div style="display:flex;gap:10px;">
+      <button onclick="closeRestDayModal()" style="
+        flex:1;padding:10px;border-radius:10px;cursor:pointer;
+        background:rgba(249,115,22,0.15);border:1px solid rgba(249,115,22,0.35);
+        color:#fb923c;font-weight:700;font-size:0.85rem;transition:all 0.15s;"
+        onmouseover="this.style.background='rgba(249,115,22,0.25)'"
+        onmouseout="this.style.background='rgba(249,115,22,0.15)'">
+        Got it! 😌
+      </button>
+      <button onclick="closeRestDayModal()" style="
+        flex:1;padding:10px;border-radius:10px;cursor:pointer;
+        background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.3);
+        color:#10b981;font-weight:700;font-size:0.85rem;transition:all 0.15s;"
+        onmouseover="this.style.background='rgba(16,185,129,0.2)'"
+        onmouseout="this.style.background='rgba(16,185,129,0.1)'">
+        Train Anyway 💪
+      </button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/api.js"></script>
 <script>
   // Async auth guard — only redirect to login on a real auth failure (401).
@@ -227,7 +297,15 @@
       }
     }
   })();
+
+  function closeRestDayModal(event) {
+    if (!event || event.target === document.getElementById('rest-day-modal-overlay'))
+      document.getElementById('rest-day-modal-overlay').classList.remove('open');
+  }
 </script>
 <script src="/static/js/dashboard.js"></script>
+
+<!-- Page transition script (shared) -->
+<script src="/static/js/page_transitions.js"></script>
 </body>
 </html>

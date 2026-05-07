@@ -5,6 +5,7 @@
  * position:fixed DOM elements — no CSS2DRenderer needed for static overlays.
  *
  * Listens for the 'hud:stats' custom event fired by the updateHUD patch below.
+ * The Angle row has been removed. A live "Volume" counter replaces it.
  */
 
 (function () {
@@ -89,9 +90,60 @@
   const formVal     = makeStatRow('Feedback');
   const postureVal  = makeStatRow('Posture');
   const progressVal = makeStatRow('Progress');
-  const angleVal    = makeStatRow('Angle');
+  const volumeVal   = makeStatRow('Session Vol.');
+
+  // Style the volume row to stand out
+  volumeVal.style.color = '#34d399';
 
   document.body.appendChild(statsEl);
+
+  // ── Live Volume tracking ──────────────────────────────────────────────────
+  // Accumulate weight × reps each time the rep counter increments.
+
+  let _sessionVolume = 0;  // kg
+  let _lastRepCount  = 0;
+
+  function getWeightKg() {
+    const el = document.getElementById('weight-input');
+    return el ? parseFloat(el.value) || 0 : 0;
+  }
+
+  function updateVolumeDisplay() {
+    volumeVal.textContent = _sessionVolume > 0
+      ? _sessionVolume.toFixed(1) + ' kg'
+      : '— kg';
+  }
+
+  // Watch rep-count DOM node for changes
+  window.addEventListener('load', function () {
+    const repCountEl = document.getElementById('rep-count');
+    if (!repCountEl) return;
+
+    new MutationObserver(function () {
+      const count = parseInt(repCountEl.textContent || '0', 10);
+      if (count > _lastRepCount) {
+        const newReps = count - _lastRepCount;
+        _sessionVolume += newReps * getWeightKg();
+        _lastRepCount   = count;
+        updateVolumeDisplay();
+      } else if (count === 0 && _lastRepCount > 0) {
+        // Reset (new set started)
+        _lastRepCount = 0;
+      }
+    }, { childList: true, subtree: true, characterData: true });
+
+    // Reset session volume when exercise changes
+    const exSelect = document.getElementById('exercise-select');
+    if (exSelect) {
+      exSelect.addEventListener('change', () => {
+        _sessionVolume = 0;
+        _lastRepCount  = 0;
+        updateVolumeDisplay();
+      });
+    }
+
+    updateVolumeDisplay();
+  });
 
   // ── Listen for HUD updates ────────────────────────────────────────────────
 
@@ -106,8 +158,7 @@
     postureVal.style.color  = pMsg ? '#fca5a5' : 'rgba(255,255,255,0.92)';
 
     progressVal.textContent = Math.round(d.progress ?? 0) + '%';
-    const angle = d.angle ?? null;
-    angleVal.textContent    = angle !== null ? Math.round(angle) + '\u00b0' : '\u2014';
+    // NOTE: Angle row removed per user request
   });
 
   // ── Patch updateHUD to fire hud:stats event ───────────────────────────────

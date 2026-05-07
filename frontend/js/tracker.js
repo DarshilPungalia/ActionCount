@@ -82,12 +82,55 @@ function getWeight() {
   return el ? parseFloat(el.value) || 0 : 0;
 }
 
+// ── Smart Auto-Fill — last used weight per exercise ───────────────────────────
+const AUTOFILL_KEY = 'ac_last_weight';
+
+function loadAutoFill(slug) {
+  try {
+    const store = JSON.parse(localStorage.getItem(AUTOFILL_KEY) || '{}');
+    const w = store[slug];
+    const weightEl = document.getElementById('weight-input');
+    if (weightEl && w != null && w > 0) {
+      weightEl.value = w;
+      // Brief green flash to signal auto-fill
+      weightEl.style.transition = 'box-shadow 0.3s';
+      weightEl.style.boxShadow  = '0 0 0 2px rgba(16,185,129,0.6)';
+      setTimeout(() => { weightEl.style.boxShadow = ''; }, 1200);
+      const reps = parseInt(document.getElementById('rep-count')?.textContent || '0', 10);
+      updateSaveBtn(reps);
+    }
+  } catch (_) {}
+}
+
+function saveAutoFill(slug, weight) {
+  if (weight <= 0) return;
+  try {
+    const store = JSON.parse(localStorage.getItem(AUTOFILL_KEY) || '{}');
+    store[slug] = weight;
+    localStorage.setItem(AUTOFILL_KEY, JSON.stringify(store));
+  } catch (_) {}
+}
+
+// Pre-fill on page load for the currently selected exercise
+document.addEventListener('DOMContentLoaded', () => {
+  const exSelect = document.getElementById('exercise-select');
+  if (exSelect) loadAutoFill(exSelect.value);
+});
+
 // Update hint whenever weight changes
 const weightInputEl = document.getElementById('weight-input');
 if (weightInputEl) {
   weightInputEl.addEventListener('input', () => {
     const reps = parseInt(repCountEl?.textContent || '0', 10);
     updateSaveBtn(reps);
+  });
+}
+
+// Auto-fill when exercise changes
+const exerciseSelectEl = document.getElementById('exercise-select');
+if (exerciseSelectEl) {
+  exerciseSelectEl.addEventListener('change', () => {
+    loadAutoFill(exerciseSelectEl.value);
   });
 }
 
@@ -144,6 +187,9 @@ async function saveSet(repsOverride = null, silent = false) {
     // Reset rep timestamps
     _repTimestamps = [];
     _lastRepCount  = 0;
+
+    // Persist last used weight for this exercise (auto-fill next time)
+    saveAutoFill(slug, weight);
 
     if (!silent) {
       const volStr = weight   > 0 ? ` · ${(reps * weight).toFixed(1)} kg volume` : '';

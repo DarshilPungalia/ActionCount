@@ -1107,3 +1107,124 @@ select:focus {
   white-space: nowrap;
   box-shadow: 0 4px 20px rgba(0,0,0,0.5);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   PAGE TRANSITIONS — subtle fade between pages
+   ═══════════════════════════════════════════════════════════ */
+
+@keyframes pageEnter {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0);    }
+}
+@keyframes pageExit {
+  from { opacity: 1; transform: translateY(0);     }
+  to   { opacity: 0; transform: translateY(-8px); }
+}
+
+body.page-enter {
+  animation: pageEnter 0.32s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+body.page-exit {
+  animation: pageExit 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
+  pointer-events: none;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   ACHIEVEMENT BADGES
+   ═══════════════════════════════════════════════════════════ */
+
+.badge-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  transition: transform 0.2s, box-shadow 0.2s;
+  cursor: default;
+  position: relative;
+}
+
+.badge.earned {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.4);
+  color: #a5b4fc;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.2);
+}
+.badge.earned:hover {
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 4px 18px rgba(99, 102, 241, 0.35);
+}
+
+.badge.locked {
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.08);
+  color: #4b5563;
+  filter: grayscale(0.8);
+}
+
+.badge-icon { font-size: 1.1rem; }
+.badge-label { letter-spacing: 0.01em; }
+
+/* Tooltip on hover */
+.badge[data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  background: rgba(15, 20, 40, 0.95);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #cbd5e1;
+  pointer-events: none;
+  z-index: 200;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   REST-DAY MODAL
+   ═══════════════════════════════════════════════════════════ */
+
+#rest-day-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  background: rgba(5, 8, 16, 0.75);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s;
+}
+#rest-day-modal-overlay.open {
+  opacity: 1;
+  pointer-events: all;
+}
+#rest-day-modal-box {
+  background: #111827;
+  border: 1px solid rgba(249,115,22,0.3);
+  border-radius: 1.25rem;
+  padding: 2rem;
+  width: 100%;
+  max-width: 420px;
+  animation: pageEnter 0.3s ease both;
+  box-shadow: 0 0 40px rgba(249,115,22,0.15), 0 16px 40px rgba(0,0,0,0.5);
+}
+
