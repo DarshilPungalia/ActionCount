@@ -242,9 +242,8 @@ const PlanLoader = (() => {
     _bannerEl.id = 'plan-banner';
     Object.assign(_bannerEl.style, {
       position:        'fixed',
-      top:             '16px',
-      left:            '50%',
-      transform:       'translateX(-50%)',
+      top:             '102px',          // ~14px clock top + ~76px clock height + 12px gap
+      left:            '16px',           // aligned with clock
       zIndex:          '65',
       display:         'none',
       flexDirection:   'column',
@@ -256,11 +255,10 @@ const PlanLoader = (() => {
       borderRadius:    '14px',
       padding:         '0',
       fontFamily:      '\'Inter\', sans-serif',
-      pointerEvents:   'auto',            // ← clickable now
+      pointerEvents:   'auto',
       userSelect:      'none',
-      minWidth:        '240px',
-      maxWidth:        '360px',
-      textAlign:       'center',
+      width:           '230px',          // fixed width, no stretching
+      maxWidth:        '230px',
       boxShadow:       '0 6px 28px rgba(99,102,241,0.18)',
       cursor:          'pointer',
       overflow:        'hidden',
@@ -272,9 +270,9 @@ const PlanLoader = (() => {
     Object.assign(headerEl.style, {
       display:         'flex',
       flexDirection:   'column',
-      alignItems:      'center',
+      alignItems:      'flex-start',
       gap:             '2px',
-      padding:         '9px 18px 8px',
+      padding:         '9px 14px 8px',
     });
 
     const planTitle = document.createElement('div');
@@ -335,10 +333,14 @@ const PlanLoader = (() => {
     const dropInner = document.createElement('div');
     dropInner.id = 'plan-banner-drop-inner';
     Object.assign(dropInner.style, {
-      padding:    '8px 12px 12px',
-      display:    'flex',
+      padding:       '6px 10px 10px',
+      display:       'flex',
       flexDirection: 'column',
-      gap:        '5px',
+      gap:           '5px',
+      maxHeight:     '106px',           // ~2 rows visible
+      overflowY:     'auto',
+      scrollbarWidth: 'thin',
+      scrollbarColor: 'rgba(99,102,241,0.35) transparent',
     });
 
     dropEl.appendChild(dropInner);
@@ -352,9 +354,9 @@ const PlanLoader = (() => {
       _dropdownOpen = !_dropdownOpen;
       const chevron = document.getElementById('plan-banner-chevron');
       if (_dropdownOpen) {
-        dropEl.style.maxHeight     = '320px';
-        dropEl.style.opacity       = '1';
-        dropEl.style.borderTopWidth = '1px';
+        dropEl.style.maxHeight      = '150px';  // label + 2 rows + padding
+        dropEl.style.opacity         = '1';
+        dropEl.style.borderTopWidth  = '1px';
         if (chevron) {
           chevron.textContent = '▲ collapse';
           chevron.style.color = 'rgba(165,180,252,0.7)';

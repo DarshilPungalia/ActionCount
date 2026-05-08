@@ -6,7 +6,7 @@ Speech-to-Text daemon for the Friday AI assistant.
 Stack:
   - PyAudio         : server microphone capture
   - Silero VAD      : voice activity detection (speech onset / offset)
-  - openai/whisper-large-v3-turbo (HuggingFace transformers) : transcription
+  - faster-whisper / CTranslate2 (openai/whisper-large-v3) : transcription
 
 Flow:
   1. PyAudio loop reads raw PCM in small chunks (512 samples @ 16 kHz)
@@ -36,8 +36,18 @@ _TAG = "[FridaySTT]"
 # ── Audio constants ───────────────────────────────────────────────────────────
 SAMPLE_RATE    = 16_000          # Silero VAD and Whisper both require 16 kHz
 CHUNK_SAMPLES  = 512             # ~32 ms per chunk at 16 kHz (Silero recommendation)
-SILENCE_CHUNKS = 25              # ~800 ms of silence after speech ends → finalize
+SILENCE_CHUNKS = 15              # ~480 ms of silence after speech ends → finalize (was 25 / ~800 ms)
 MIN_SPEECH_CHUNKS = 5            # ignore bursts shorter than ~160 ms (noise gate)
+SPEECH_THRESHOLD  = 0.5          # confidence required to enter speech state
+SILENCE_THRESHOLD = 0.35         # confidence below which silence is confirmed (hysteresis)
+
+# ── Hallucination filter ──────────────────────────────────────────────────────
+_HALLUCINATIONS: frozenset[str] = frozenset({
+    "you", "thank you", "thanks", "bye", "goodbye", "ok", "okay",
+    ".", "..", "...", "uh", "um", "hmm", "hm",
+    "the", "a", "and", "subtitles by", "transcribed by",
+    "www.", ".com", "amara.org", "like and subscribe",
+})
 
 
 class FridaySTT:
@@ -55,7 +65,7 @@ class FridaySTT:
         # Lazy-loaded models
         self._vad_model    = None
         self._vad_utils    = None
-        self._whisper_pipe = None
+        self._whisper_model = None   # faster-whisper WhisperModel
 
     @classmethod
     def instance(cls) -> "FridaySTT":
@@ -85,7 +95,7 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Models : Silero VAD + openai/whisper-large-v3-turbo")
+        print(f"{_TAG} Models : Silero VAD + faster-whisper (openai/whisper-large-v3)")
         print(f"{_TAG} Mic    : SERVER default audio device (PyAudio)")
 
     def stop(self) -> None:
@@ -108,45 +118,26 @@ class FridaySTT:
         print(f"{_TAG} ✅ Silero VAD loaded.")
 
     def _load_whisper(self):
-        if self._whisper_pipe is not None:
+        if self._whisper_model is not None:
             return
-        print(f"{_TAG} Loading openai/whisper-large-v3 …")
+        print(f"{_TAG} Loading faster-whisper (openai/whisper-large-v3) …")
         import torch  # noqa: PLC0415
-        from transformers import (  # noqa: PLC0415
-            AutoModelForSpeechSeq2Seq,
-            AutoProcessor,
-            pipeline,
-        )
-        device      = "cuda:0" if torch.cuda.is_available() else "cpu"
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        model_id    = "openai/whisper-large-v3"
+        from faster_whisper import WhisperModel  # noqa: PLC0415
 
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_id,
-            dtype=torch_dtype,           
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-        )
-        model.to(device)
+        # Use GPU with float16 if available, otherwise CPU with int8 for speed
+        if torch.cuda.is_available():
+            device       = "cuda"
+            compute_type = "float16"
+        else:
+            device       = "cpu"
+            compute_type = "int8"   # fastest on CPU without accuracy loss
 
-        # Force English-only decoding; clear cached forced_decoder_ids to avoid
-        # the duplicate SuppressTokensLogitsProcessor warning.
-        model.generation_config.forced_decoder_ids = None
-        model.generation_config.language = "english"
-        model.generation_config.task     = "transcribe"
-
-        processor = AutoProcessor.from_pretrained(model_id)
-
-        # NOTE: do NOT pass generate_kwargs here — set per-call in _transcribe
-        self._whisper_pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            torch_dtype=torch_dtype,
+        self._whisper_model = WhisperModel(
+            "large-v3",
             device=device,
+            compute_type=compute_type,
         )
-        print(f"{_TAG} ✅ Whisper loaded on {device} — forced language: English.")
+        print(f"{_TAG} ✅ faster-whisper loaded on {device} ({compute_type}) — language: English.")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -171,10 +162,20 @@ class FridaySTT:
     def _recognition_loop(self) -> None:
         import numpy as np  # noqa: PLC0415
         import pyaudio      # noqa: PLC0415
+        import torch        # noqa: PLC0415  ← moved here, outside the hot loop
 
         (get_speech_timestamps, _, _, _, _) = self._vad_utils
 
-        pa     = pyaudio.PyAudio()
+        # Fix 6: Device diagnostic at startup
+        pa   = pyaudio.PyAudio()
+        info = pa.get_default_input_device_info()
+        print(f"{_TAG} Default input device : {info['name']}")
+        print(f"{_TAG} Native sample rate   : {info['defaultSampleRate']} Hz")
+        print(f"{_TAG} Max input channels   : {info['maxInputChannels']}")
+        if int(info['defaultSampleRate']) != SAMPLE_RATE:
+            print(f"{_TAG} ⚠️  WARNING: Native rate {info['defaultSampleRate']} Hz != {SAMPLE_RATE} Hz. "
+                  f"PyAudio will attempt resampling — accuracy may be degraded.")
+
         stream = pa.open(
             format=pyaudio.paInt16,
             channels=1,
@@ -186,6 +187,7 @@ class FridaySTT:
         print(f"{_TAG} ✅ Mic stream open — listening …")
 
         speech_buffer:      list[np.ndarray] = []
+        _pre_buffer:        list[np.ndarray] = []   # Fix 1: VAD pre-buffer
         silence_count:      int  = 0
         is_speaking:        bool = False
         speech_chunk_count: int  = 0
@@ -195,28 +197,39 @@ class FridaySTT:
                 raw   = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
                 chunk = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
-                import torch  # noqa: PLC0415
                 chunk_tensor = torch.from_numpy(chunk)
                 confidence   = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
 
-                if confidence > 0.5:
+                if confidence > SPEECH_THRESHOLD:
                     # ── Speech detected ───────────────────────────────────────
                     if not is_speaking:
                         speech_chunk_count += 1
+                        _pre_buffer.append(chunk)  # accumulate into pre-buffer
                         if speech_chunk_count >= MIN_SPEECH_CHUNKS:
                             is_speaking   = True
                             silence_count = 0
+                            speech_buffer.extend(_pre_buffer)  # flush pre-speech audio in
+                            _pre_buffer = []
                             print(f"{_TAG} 🎙  Speech STARTED (VAD confidence={confidence:.2f})")
                             self._fire_speech_start()
-                    speech_buffer.append(chunk)
+                    else:
+                        speech_buffer.append(chunk)
                     silence_count = 0
 
                 else:
-                    # ── Silence detected ──────────────────────────────────────
-                    if not is_speaking:
-                        speech_chunk_count = max(0, speech_chunk_count - 1)
+                    # ── Silence / ambiguous detected ──────────────────────────
+                    # Fix 2: Hysteresis band — ambiguous confidence while speaking → keep buffering
+                    if is_speaking and confidence >= SILENCE_THRESHOLD:
+                        speech_buffer.append(chunk)
                         continue
 
+                    if not is_speaking:
+                        speech_chunk_count = max(0, speech_chunk_count - 1)
+                        # Keep only the last MIN_SPEECH_CHUNKS chunks as a rolling pre-buffer
+                        _pre_buffer = _pre_buffer[-(MIN_SPEECH_CHUNKS):]
+                        continue
+
+                    # Definitive silence while speaking
                     speech_buffer.append(chunk)   # keep trailing silence for context
                     silence_count += 1
 
@@ -226,6 +239,7 @@ class FridaySTT:
 
                         audio_np = np.concatenate(speech_buffer, axis=0)
                         speech_buffer      = []
+                        _pre_buffer        = []
                         silence_count      = 0
                         is_speaking        = False
                         speech_chunk_count = 0
@@ -240,6 +254,17 @@ class FridaySTT:
 
     # ── Transcription ─────────────────────────────────────────────────────────
 
+    def _is_hallucination(self, text: str) -> bool:
+        """Return True if the transcript looks like a Whisper hallucination."""
+        t = text.lower().strip().strip(".,!?\"'")
+        if len(t) < 3:
+            return True
+        if t in _HALLUCINATIONS:
+            return True
+        if any(h in t for h in ("subtitle", "transcrib", "www.", ".com", "amara")):
+            return True
+        return False
+
     def _transcribe(self, audio_np: "ndarray") -> None:
         try:
             duration_s = len(audio_np) / SAMPLE_RATE
@@ -247,13 +272,21 @@ class FridaySTT:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
-            result = self._whisper_pipe(
-                {"array": audio_np, "sampling_rate": SAMPLE_RATE},
-                generate_kwargs={"language": "english", "task": "transcribe"},
+            # faster-whisper returns a lazy segment generator + metadata
+            segments, _info = self._whisper_model.transcribe(
+                audio_np,
+                language="en",
+                task="transcribe",
+                beam_size=5,
+                vad_filter=False,   # we do our own VAD upstream
             )
-            text = (result.get("text") or "").strip()
+            text = " ".join(seg.text for seg in segments).strip()
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
+                return
+            # Fix 3: Hallucination filter
+            if self._is_hallucination(text):
+                print(f"{_TAG} 🚫 Hallucination filtered: \"{text}\"")
                 return
             word_count = len(text.split())
             print(f"{_TAG} Transcript ({word_count} words): \"{text}\"")
