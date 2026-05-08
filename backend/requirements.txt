@@ -44,12 +44,14 @@ langchain-anthropic
 langgraph
 langgraph-checkpoint-mongodb
 
-# Friday AI Assistant — STT (Whisper large-v3-turbo + Silero VAD)
+# Friday AI Assistant — STT (faster-whisper + Silero VAD + sounddevice)
 transformers
 accelerate
 datasets
-pyaudio
+sounddevice>=0.4.6
+scipy>=1.11.0
 soundfile
+faster-whisper
 
 # TTS (ElevenLabs streaming via httpx — no extra package needed)
 # HTTP client

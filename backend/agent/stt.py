@@ -4,7 +4,8 @@ friday_stt.py
 Speech-to-Text daemon for the Friday AI assistant.
 
 Stack:
-  - PyAudio         : server microphone capture
+  - sounddevice     : server microphone capture (native rate, float32)
+  - scipy.signal    : polyphase resampling 44 100 Hz → 16 000 Hz
   - Silero VAD      : voice activity detection (speech onset / offset)
   - faster-whisper / CTranslate2 (openai/whisper-large-v3) : transcription
 
@@ -34,12 +35,15 @@ from typing import Callable, Optional
 _TAG = "[FridaySTT]"
 
 # ── Audio constants ───────────────────────────────────────────────────────────
-SAMPLE_RATE    = 16_000          # Silero VAD and Whisper both require 16 kHz
-CHUNK_SAMPLES  = 512             # ~32 ms per chunk at 16 kHz (Silero recommendation)
-SILENCE_CHUNKS = 15              # ~480 ms of silence after speech ends → finalize (was 25 / ~800 ms)
-MIN_SPEECH_CHUNKS = 5            # ignore bursts shorter than ~160 ms (noise gate)
-SPEECH_THRESHOLD  = 0.5          # confidence required to enter speech state
-SILENCE_THRESHOLD = 0.35         # confidence below which silence is confirmed (hysteresis)
+SAMPLE_RATE          = 16_000    # Target rate for Silero VAD and Whisper
+NATIVE_RATE          = 44_100    # Mic native rate (Windows WASAPI default)
+CHUNK_DURATION_MS    = 32        # Chunk size in ms (Silero recommendation)
+CHUNK_SAMPLES        = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)   # 512  @ 16 kHz
+NATIVE_CHUNK_SAMPLES = int(NATIVE_RATE * CHUNK_DURATION_MS / 1000)   # 1411 @ 44.1 kHz
+SILENCE_CHUNKS       = 15        # ~480 ms of silence → finalize (was 25 / ~800 ms)
+MIN_SPEECH_CHUNKS    = 5         # ignore bursts shorter than ~160 ms (noise gate)
+SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
+SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
 
 # ── Hallucination filter ──────────────────────────────────────────────────────
 _HALLUCINATIONS: frozenset[str] = frozenset({
@@ -63,9 +67,11 @@ class FridaySTT:
         self._on_speech_end:   Optional[Callable[[], None]] = None
 
         # Lazy-loaded models
-        self._vad_model    = None
-        self._vad_utils    = None
+        self._vad_model     = None
+        self._vad_utils     = None
         self._whisper_model = None   # faster-whisper WhisperModel
+
+        self._log_audio_device_info()
 
     @classmethod
     def instance(cls) -> "FridaySTT":
@@ -101,6 +107,24 @@ class FridaySTT:
     def stop(self) -> None:
         print(f"{_TAG} Stop requested.")
         self._stop_event.set()
+
+    # ── Audio device diagnostics ─────────────────────────────────────────────
+
+    def _log_audio_device_info(self) -> None:
+        """Log audio device configuration for debugging."""
+        try:
+            import sounddevice as sd  # noqa: PLC0415
+            info = sd.query_devices(kind="input")
+            print(f"{_TAG} === Audio Device Info ===")
+            print(f"{_TAG} Device            : {info['name']}")
+            print(f"{_TAG} Native sample rate : {info['default_samplerate']} Hz")
+            print(f"{_TAG} Max input channels : {info['max_input_channels']}")
+            print(f"{_TAG} Resampling         : {NATIVE_RATE} Hz → {SAMPLE_RATE} Hz")
+            print(f"{_TAG} Native chunk       : {NATIVE_CHUNK_SAMPLES} samples (~{CHUNK_DURATION_MS} ms)")
+            print(f"{_TAG} Resampled chunk    : {CHUNK_SAMPLES} samples (~{CHUNK_DURATION_MS} ms)")
+            print(f"{_TAG} =========================")
+        except Exception as exc:
+            print(f"{_TAG} Could not query audio device: {exc}")
 
     # ── Model loading ─────────────────────────────────────────────────────────
 
@@ -160,42 +184,42 @@ class FridaySTT:
         print(f"{_TAG} Daemon exited cleanly.")
 
     def _recognition_loop(self) -> None:
-        import numpy as np  # noqa: PLC0415
-        import pyaudio      # noqa: PLC0415
-        import torch        # noqa: PLC0415  ← moved here, outside the hot loop
+        import numpy as np            # noqa: PLC0415
+        import torch                  # noqa: PLC0415
+        import sounddevice as sd      # noqa: PLC0415
+        import scipy.signal as sps    # noqa: PLC0415
 
         (get_speech_timestamps, _, _, _, _) = self._vad_utils
 
-        # Fix 6: Device diagnostic at startup
-        pa   = pyaudio.PyAudio()
-        info = pa.get_default_input_device_info()
-        print(f"{_TAG} Default input device : {info['name']}")
-        print(f"{_TAG} Native sample rate   : {info['defaultSampleRate']} Hz")
-        print(f"{_TAG} Max input channels   : {info['maxInputChannels']}")
-        if int(info['defaultSampleRate']) != SAMPLE_RATE:
-            print(f"{_TAG} ⚠️  WARNING: Native rate {info['defaultSampleRate']} Hz != {SAMPLE_RATE} Hz. "
-                  f"PyAudio will attempt resampling — accuracy may be degraded.")
-
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=SAMPLE_RATE,
-            input=True,
-            frames_per_buffer=CHUNK_SAMPLES,
-        )
-
-        print(f"{_TAG} ✅ Mic stream open — listening …")
-
         speech_buffer:      list[np.ndarray] = []
-        _pre_buffer:        list[np.ndarray] = []   # Fix 1: VAD pre-buffer
+        _pre_buffer:        list[np.ndarray] = []   # VAD pre-buffer
         silence_count:      int  = 0
         is_speaking:        bool = False
         speech_chunk_count: int  = 0
 
-        try:
+        # Open stream at native rate; we resample each chunk to 16 kHz ourselves
+        with sd.InputStream(
+            samplerate=NATIVE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=NATIVE_CHUNK_SAMPLES,
+        ) as stream:
+            print(f"{_TAG} ✅ Audio stream opened: {NATIVE_RATE} Hz → {SAMPLE_RATE} Hz")
+
             while not self._stop_event.is_set():
-                raw   = stream.read(CHUNK_SAMPLES, exception_on_overflow=False)
-                chunk = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                chunk_raw, overflowed = stream.read(NATIVE_CHUNK_SAMPLES)
+                if overflowed:
+                    print(f"{_TAG} ⚠️  Audio buffer overflow — CPU can't keep up")
+
+                chunk_raw = chunk_raw.flatten()   # (NATIVE_CHUNK_SAMPLES, 1) → (N,)
+
+                # Polyphase resample: 44100 → 16000 (ratio 160/441)
+                chunk = sps.resample_poly(
+                    chunk_raw,
+                    up=SAMPLE_RATE,
+                    down=NATIVE_RATE,
+                ).astype(np.float32)
+                # chunk is now exactly CHUNK_SAMPLES (512) at 16 kHz
 
                 chunk_tensor = torch.from_numpy(chunk)
                 confidence   = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
@@ -218,7 +242,7 @@ class FridaySTT:
 
                 else:
                     # ── Silence / ambiguous detected ──────────────────────────
-                    # Fix 2: Hysteresis band — ambiguous confidence while speaking → keep buffering
+                    # Hysteresis band — ambiguous confidence while speaking → keep buffering
                     if is_speaking and confidence >= SILENCE_THRESHOLD:
                         speech_buffer.append(chunk)
                         continue
@@ -246,11 +270,7 @@ class FridaySTT:
 
                         self._transcribe(audio_np)
 
-        finally:
-            stream.stop_stream()
-            stream.close()
-            pa.terminate()
-            print(f"{_TAG} Mic stream closed.")
+        print(f"{_TAG} Audio stream closed.")
 
     # ── Transcription ─────────────────────────────────────────────────────────
 
