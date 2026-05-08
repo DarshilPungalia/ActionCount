@@ -1,0 +1,105 @@
+angle(A, B, C) → angle at B
+dist(A, B) → Euclidean distance
+mid(A, B) → midpoint
+Δy → vertical difference
+Δx → horizontal difference
+“frame_t vs frame_t-1” → for motion/velocity
+
+================ BICEP CURL ================
+
+Elbows moving forward | KP: Shoulder(5/6), Elbow(7/8) | Condition: Δx(elbow, shoulder) increases | Feedback: Keep elbows fixed close to torso
+Elbows flaring outward | KP: Shoulder, Elbow | Condition: |Δx(elbow, shoulder)| > threshold | Feedback: Tuck elbows inward
+Incomplete extension | KP: Shoulder, Elbow, Wrist | Condition: angle(shoulder, elbow, wrist) < 160° at bottom | Feedback: Fully extend arms at bottom
+Incomplete contraction | KP: Shoulder, Wrist | Condition: dist(wrist, shoulder) not minimal at top | Feedback: Curl fully and squeeze at top
+Leaning back / swinging | KP: Shoulder, Hip | Condition: Δx(shoulder, hip) changes over time | Feedback: Keep torso stable, avoid swinging
+Uneven reps | KP: L/R Shoulder, Elbow, Wrist | Condition: angle(L arm) ≠ angle(R arm) | Feedback: Maintain symmetry between arms
+Using momentum | KP: Wrist | Condition: high velocity spikes | Feedback: Slow down, use controlled movement
+
+
+================ CRUNCHES ================
+
+Excessive neck flexion | KP: Nose, Shoulder, Hip | Condition: angle(nose, shoulder, hip) too small | Feedback: Keep neck neutral, avoid pulling head
+Lower back lifting | KP: Hip, Shoulder | Condition: sudden Δy(hip) increase | Feedback: Keep lower back pressed down
+Using momentum | KP: Shoulder | Condition: high acceleration | Feedback: Lift slowly using abs
+Incomplete lift | KP: Shoulder, Hip, Knee | Condition: insufficient angle reduction | Feedback: Lift upper body fully
+
+
+================ KNEE RAISE ================
+
+Leaning backward | KP: Shoulder, Hip | Condition: Δx(shoulder, hip) increases | Feedback: Keep torso upright
+Swinging legs | KP: Knee, Ankle | Condition: oscillating Δx(knee) | Feedback: Avoid swinging, control movement
+Incomplete knee height | KP: Knee, Hip | Condition: knee_y > hip_y not reached | Feedback: Raise knees higher
+Uneven raise | KP: L/R Knee | Condition: Δy(L knee, R knee) | Feedback: Lift both legs evenly
+
+
+================ LATERAL RAISE ================
+
+Raising above shoulder | KP: Wrist, Shoulder | Condition: wrist_y < shoulder_y | Feedback: Stop at shoulder height
+Elbows too bent/straight | KP: Shoulder, Elbow, Wrist | Condition: angle outside ~140–170° | Feedback: Maintain slight elbow bend
+Leaning torso | KP: Shoulder, Hip | Condition: Δx(shoulder, hip) | Feedback: Keep torso upright
+Uneven arms | KP: L/R Wrist | Condition: Δy(L wrist, R wrist) | Feedback: Raise both arms evenly
+
+
+================ LEG RAISE ================
+
+Lower back arch | KP: Shoulder, Hip, Knee | Condition: angle(shoulder, hip, knee) increases | Feedback: Keep lower back pressed down
+Legs bent too much | KP: Hip, Knee, Ankle | Condition: angle < 160° | Feedback: Keep legs straighter
+Dropping legs fast | KP: Ankle | Condition: high downward velocity | Feedback: Lower legs slowly
+Incomplete raise | KP: Hip, Ankle | Condition: insufficient height | Feedback: Raise legs fully
+
+
+================ OVERHEAD PRESS ================
+
+Lower back arch | KP: Shoulder, Hip | Condition: Δx(shoulder, hip) | Feedback: Engage core, keep spine neutral
+Elbows flared | KP: Shoulder, Elbow | Condition: Δx(elbow, shoulder) large | Feedback: Keep elbows slightly forward
+Forward bar path | KP: Wrist, Shoulder | Condition: forward Δx(wrist) | Feedback: Press vertically overhead
+Incomplete lockout | KP: Shoulder, Elbow, Wrist | Condition: angle < 170° | Feedback: Fully extend arms overhead
+Uneven arms | KP: L/R Wrist | Condition: Δy(L wrist, R wrist) | Feedback: Lock both arms evenly
+
+
+================ PULL-UP ================
+
+Half reps | KP: Nose, Wrist | Condition: nose not reaching wrist height | Feedback: Complete full range of motion
+Kipping | KP: Hip, Shoulder | Condition: oscillating Δx(hip) | Feedback: Avoid swinging, control body
+Uneven pulling | KP: L/R Elbow | Condition: angle mismatch | Feedback: Pull evenly with both arms
+
+
+================ SIT-UP ================
+
+Jerking upward | KP: Shoulder | Condition: high acceleration | Feedback: Move in a controlled manner
+Pulling neck | KP: Nose, Shoulder | Condition: excessive flexion angle | Feedback: Avoid pulling neck, use core
+Incomplete sit-up | KP: Shoulder, Hip | Condition: insufficient lift | Feedback: Complete full sit-up
+
+
+================ SQUAT ================
+
+Knee valgus | KP: Hip, Knee, Ankle | Condition: knee moves inward (knee_x < hip_x) | Feedback: Keep knees aligned with toes
+Forward lean | KP: Shoulder, Hip | Condition: large Δx(shoulder, hip) | Feedback: Keep chest upright
+Not enough depth | KP: Hip, Knee | Condition: hip_y not below knee_y | Feedback: Go deeper into squat
+Heels lifting (approx) | KP: Ankle | Condition: vertical instability | Feedback: Keep heels grounded
+Uneven squat | KP: L/R Hip | Condition: Δy(L hip, R hip) | Feedback: Distribute weight evenly
+
+
+================ PUSH-UP ================
+
+Sagging hips | KP: Shoulder, Hip, Ankle | Condition: angle(shoulder, hip, ankle) < ~160° | Feedback: Keep body in straight line, engage core
+Piked hips (too high) | KP: Shoulder, Hip, Ankle | Condition: angle(shoulder, hip, ankle) > ~200° | Feedback: Lower hips to align body
+Elbows flaring out | KP: Shoulder, Elbow, Wrist | Condition: large lateral Δx(elbow, shoulder) | Feedback: Keep elbows closer to body (~45°)
+Incomplete depth | KP: Shoulder, Elbow | Condition: elbow angle not < ~90° | Feedback: Lower chest closer to ground
+Incomplete lockout | KP: Shoulder, Elbow, Wrist | Condition: angle < ~170° at top | Feedback: Fully extend arms at top
+Head dropping | KP: Nose, Shoulder | Condition: nose_y << shoulder_y | Feedback: Keep head neutral with spine
+Uneven push | KP: L/R Shoulder, Elbow, Wrist | Condition: angle/height mismatch | Feedback: Push evenly with both arms
+Hands too forward | KP: Wrist, Shoulder | Condition: wrist_x far ahead of shoulder_x | Feedback: Keep hands under shoulders
+Using momentum | KP: Shoulder/Hip | Condition: high velocity spikes | Feedback: Control movement, avoid bouncing
+
+
+================ UNIVERSAL ERRORS ================
+
+Head forward posture | KP: Nose, Shoulder | Condition: nose_x ahead of shoulder_x | Feedback: Keep head aligned with spine
+Hip tilt | KP: L/R Hip | Condition: Δy(L hip, R hip) | Feedback: Maintain level hips
+Knee valgus/varus | KP: Hip, Knee, Ankle | Condition: knee deviates inward/outward | Feedback: Align knees with feet
+Foot rotation asymmetry | KP: Ankle | Condition: unequal orientation | Feedback: Keep feet aligned
+Too fast reps | KP: Any joint | Condition: high velocity | Feedback: Slow down movement
+Incomplete ROM | KP: Joint angles | Condition: angle not reaching full range | Feedback: Use full range of motion
+Jerky transitions | KP: Any joint | Condition: high acceleration spikes | Feedback: Maintain smooth motion
+Symmetry errors | KP: L/R pairs | Condition: positional/angle mismatch | Feedback: Keep movements balanced

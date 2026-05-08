@@ -324,7 +324,6 @@ class FridaySTT:
                 generate_kwargs={
                     "language": "english",
                     "task": "transcribe",
-                    "condition_on_previous_text": False,
                 },
             )
 
