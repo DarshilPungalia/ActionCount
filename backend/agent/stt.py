@@ -40,7 +40,7 @@ NATIVE_RATE          = 44_100    # Mic native rate (Windows WASAPI default)
 CHUNK_DURATION_MS    = 32        # Chunk size in ms (Silero recommendation)
 CHUNK_SAMPLES        = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)   # 512  @ 16 kHz
 NATIVE_CHUNK_SAMPLES = int(NATIVE_RATE * CHUNK_DURATION_MS / 1000)   # 1411 @ 44.1 kHz
-SILENCE_CHUNKS       = 15        # ~480 ms of silence → finalize (was 25 / ~800 ms)
+SILENCE_CHUNKS       = 22        # ~700 ms of silence → finalize (was 15 / ~480 ms)
 MIN_SPEECH_CHUNKS    = 5         # ignore bursts shorter than ~160 ms (noise gate)
 SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
 SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
@@ -306,16 +306,33 @@ class FridaySTT:
 
     def _transcribe(self, audio_np: "ndarray") -> None:
         try:
+            import numpy as np  # noqa: PLC0415
             duration_s = len(audio_np) / SAMPLE_RATE
             if duration_s < 0.4:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
+            # Energy gate — skip near-silence before hitting Whisper
+            rms = np.sqrt(np.mean(audio_np ** 2))
+            if rms < 0.01:
+                print(f"{_TAG} Skipping low-energy clip (RMS={rms:.4f})")
+                return
+
             result = self._whisper_pipe(
                 {"array": audio_np, "sampling_rate": SAMPLE_RATE},
-                generate_kwargs={"language": "english", "task": "transcribe"},
+                return_timestamps=True,
+                generate_kwargs={
+                    "language": "english",
+                    "task": "transcribe",
+                    "condition_on_previous_text": False,
+                },
             )
-            text = (result.get("text") or "").strip()
+
+            # Filter segments by no_speech_prob — primary hallucination defence
+            chunks = result.get("chunks") or []
+            filtered = [c["text"] for c in chunks if c.get("no_speech_prob", 1.0) < 0.6]
+            text = " ".join(filtered).strip()
+
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
                 return
