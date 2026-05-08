@@ -45,6 +45,20 @@ MIN_SPEECH_CHUNKS    = 5         # ignore bursts shorter than ~160 ms (noise gat
 SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
 SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
 
+# ── Fix 1: Barge-in thresholds (decoupled from VAD onset) ────────────────────
+# Barge-in requires sustained HIGH-confidence speech before killing TTS.
+# This prevents noise spikes at 0.5–0.75 confidence from aborting playback.
+BARGE_IN_THRESHOLD   = 0.80      # VAD confidence required to count toward barge-in
+BARGE_IN_CHUNKS      = 3         # consecutive chunks above threshold before firing (~96 ms)
+
+# ── Fix 2: Dynamic RMS gate ───────────────────────────────────────────────────
+# Instead of a hardcoded 0.01 floor, we track ambient noise during silence and
+# require speech to be RMS_SPEECH_MULTIPLIER × louder than that baseline.
+RMS_FLOOR            = 0.002     # absolute minimum — below this is a dead/disconnected mic
+RMS_SPEECH_MULTIPLIER = 3.0      # speech RMS must be this many times the ambient level
+RMS_EMA_ALPHA        = 0.05      # EMA weight for ambient noise update (slow, stable)
+RMS_AMBIENT_INIT     = 0.008     # conservative starting estimate
+
 # ── Hallucination filter ──────────────────────────────────────────────────────
 _HALLUCINATIONS: frozenset[str] = frozenset({
     "you", "thank you", "thanks", "bye", "goodbye", "ok", "okay",
@@ -70,6 +84,9 @@ class FridaySTT:
         self._vad_model     = None
         self._vad_utils     = None
         self._whisper_pipe  = None   # HuggingFace Transformers pipeline
+
+        # Fix 2: ambient RMS baseline, updated during silence periods
+        self._ambient_rms: float = RMS_AMBIENT_INIT
 
         self._log_audio_device_info()
 
@@ -216,6 +233,10 @@ class FridaySTT:
         is_speaking:        bool = False
         speech_chunk_count: int  = 0
 
+        # Fix 1: barge-in state — tracked separately from VAD onset
+        _barge_in_count: int  = 0
+        _barge_in_fired: bool = False
+
         # Open stream at native rate; we resample each chunk to 16 kHz ourselves
         with sd.InputStream(
             samplerate=NATIVE_RATE,
@@ -245,6 +266,19 @@ class FridaySTT:
 
                 if confidence > SPEECH_THRESHOLD:
                     # ── Speech detected ───────────────────────────────────────
+
+                    # Fix 1: barge-in requires sustained high-confidence speech.
+                    # Accumulate a separate counter; only fire once per utterance.
+                    if confidence >= BARGE_IN_THRESHOLD:
+                        _barge_in_count += 1
+                        if _barge_in_count >= BARGE_IN_CHUNKS and not _barge_in_fired:
+                            _barge_in_fired = True
+                            self._fire_barge_in()
+                    else:
+                        # Confidence is in SPEECH_THRESHOLD..BARGE_IN_THRESHOLD —
+                        # valid speech but not strong enough to interrupt TTS.
+                        _barge_in_count = 0
+
                     if not is_speaking:
                         speech_chunk_count += 1
                         _pre_buffer.append(chunk)  # accumulate into pre-buffer
@@ -253,7 +287,7 @@ class FridaySTT:
                             silence_count = 0
                             speech_buffer.extend(_pre_buffer)  # flush pre-speech audio in
                             _pre_buffer = []
-                            print(f"{_TAG} 🎙  Speech STARTED (VAD confidence={confidence:.2f})")
+                            print(f"{_TAG} 🎙️  Speech STARTED (VAD confidence={confidence:.2f})")
                             self._fire_speech_start()
                     else:
                         speech_buffer.append(chunk)
@@ -270,6 +304,13 @@ class FridaySTT:
                         speech_chunk_count = max(0, speech_chunk_count - 1)
                         # Keep only the last MIN_SPEECH_CHUNKS chunks as a rolling pre-buffer
                         _pre_buffer = _pre_buffer[-(MIN_SPEECH_CHUNKS):]
+
+                        # Fix 2: calibrate ambient noise during confirmed silence
+                        chunk_rms = float(np.sqrt(np.mean(chunk ** 2)))
+                        self._ambient_rms = (
+                            (1.0 - RMS_EMA_ALPHA) * self._ambient_rms
+                            + RMS_EMA_ALPHA * chunk_rms
+                        )
                         continue
 
                     # Definitive silence while speaking
@@ -286,6 +327,10 @@ class FridaySTT:
                         silence_count      = 0
                         is_speaking        = False
                         speech_chunk_count = 0
+
+                        # Fix 1: reset barge-in state for next utterance
+                        _barge_in_count = 0
+                        _barge_in_fired = False
 
                         self._transcribe(audio_np)
 
@@ -312,10 +357,16 @@ class FridaySTT:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
-            # Energy gate — skip near-silence before hitting Whisper
-            rms = np.sqrt(np.mean(audio_np ** 2))
-            if rms < 0.01:
-                print(f"{_TAG} Skipping low-energy clip (RMS={rms:.4f})")
+            # Fix 2: dynamic RMS gate — threshold is relative to measured ambient noise,
+            # not a hardcoded constant. This handles quiet mics and varying environments.
+            rms = float(np.sqrt(np.mean(audio_np ** 2)))
+            dynamic_threshold = max(RMS_FLOOR, self._ambient_rms * RMS_SPEECH_MULTIPLIER)
+            if rms < dynamic_threshold:
+                print(
+                    f"{_TAG} Skipping low-energy clip "
+                    f"(RMS={rms:.4f} < threshold={dynamic_threshold:.4f}, "
+                    f"ambient={self._ambient_rms:.4f})"
+                )
                 return
 
             result = self._whisper_pipe(
@@ -335,7 +386,6 @@ class FridaySTT:
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
                 return
-            # Fix 3: Hallucination filter
             if self._is_hallucination(text):
                 print(f"{_TAG} 🚫 Hallucination filtered: \"{text}\"")
                 return
@@ -351,14 +401,20 @@ class FridaySTT:
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
-    def _fire_speech_start(self) -> None:
-        # Barge-in: stop TTS if it's currently speaking
+    def _fire_barge_in(self) -> None:
+        """Stop TTS immediately — only called after BARGE_IN_CHUNKS consecutive
+        high-confidence (≥ BARGE_IN_THRESHOLD) VAD detections. This prevents
+        noise spikes and low-confidence VAD hits from aborting TTS playback."""
+        print(f"{_TAG} ⏹️  Barge-in confirmed — stopping TTS.")
         try:
             from backend.agent.tts import stop_speaking  # noqa: PLC0415
             stop_speaking()
         except Exception:
             pass
 
+    def _fire_speech_start(self) -> None:
+        """Fire the on_speech_start callback. Barge-in is handled separately
+        by _fire_barge_in() and may have already fired before this point."""
         if self._on_speech_start:
             try:
                 self._on_speech_start()
