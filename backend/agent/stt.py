@@ -7,7 +7,7 @@ Stack:
   - sounddevice     : server microphone capture (native rate, float32)
   - scipy.signal    : polyphase resampling 44 100 Hz → 16 000 Hz
   - Silero VAD      : voice activity detection (speech onset / offset)
-  - faster-whisper / CTranslate2 (openai/whisper-large-v3) : transcription
+  - HuggingFace Transformers / openai/whisper-large-v3 : transcription
 
 Flow:
   1. PyAudio loop reads raw PCM in small chunks (512 samples @ 16 kHz)
@@ -69,7 +69,7 @@ class FridaySTT:
         # Lazy-loaded models
         self._vad_model     = None
         self._vad_utils     = None
-        self._whisper_model = None   # faster-whisper WhisperModel
+        self._whisper_pipe  = None   # HuggingFace Transformers pipeline
 
         self._log_audio_device_info()
 
@@ -101,7 +101,7 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Models : Silero VAD + faster-whisper (openai/whisper-large-v3)")
+        print(f"{_TAG} Models : Silero VAD + HuggingFace openai/whisper-large-v3")
         print(f"{_TAG} Mic    : SERVER default audio device (PyAudio)")
 
     def stop(self) -> None:
@@ -142,26 +142,45 @@ class FridaySTT:
         print(f"{_TAG} ✅ Silero VAD loaded.")
 
     def _load_whisper(self):
-        if self._whisper_model is not None:
+        if self._whisper_pipe is not None:
             return
-        print(f"{_TAG} Loading faster-whisper (openai/whisper-large-v3) …")
-        import torch  # noqa: PLC0415
-        from faster_whisper import WhisperModel  # noqa: PLC0415
-
-        # Use GPU with float16 if available, otherwise CPU with int8 for speed
-        if torch.cuda.is_available():
-            device       = "cuda"
-            compute_type = "float16"
-        else:
-            device       = "cpu"
-            compute_type = "int8"   # fastest on CPU without accuracy loss
-
-        self._whisper_model = WhisperModel(
-            "large-v3",
-            device=device,
-            compute_type=compute_type,
+        print(f"{_TAG} Loading openai/whisper-large-v3 (Transformers pipeline) …")
+        import torch  
+        from transformers import (  
+            AutoModelForSpeechSeq2Seq,
+            AutoProcessor,
+            pipeline,
         )
-        print(f"{_TAG} ✅ faster-whisper loaded on {device} ({compute_type}) — language: English.")
+        device      = "cuda:0" if torch.cuda.is_available() else "cpu"
+        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        model_id    = "openai/whisper-large-v3-turbo"
+
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id,
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
+            use_safetensors=True,
+        )
+        model.to(device)
+
+        # Force English-only decoding; clear cached forced_decoder_ids to avoid
+        # the duplicate SuppressTokensLogitsProcessor warning.
+        model.generation_config.forced_decoder_ids = None
+        model.generation_config.language = "english"
+        model.generation_config.task     = "transcribe"
+
+        processor = AutoProcessor.from_pretrained(model_id)
+
+        # NOTE: do NOT pass generate_kwargs here — set per-call in _transcribe
+        self._whisper_pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            torch_dtype=torch_dtype,
+            device=device,
+        )
+        print(f"{_TAG} ✅ Whisper loaded on {device} ({torch_dtype}) — forced language: English.")
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -292,15 +311,11 @@ class FridaySTT:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
-            # faster-whisper returns a lazy segment generator + metadata
-            segments, _info = self._whisper_model.transcribe(
-                audio_np,
-                language="en",
-                task="transcribe",
-                beam_size=5,
-                vad_filter=False,   # we do our own VAD upstream
+            result = self._whisper_pipe(
+                {"array": audio_np, "sampling_rate": SAMPLE_RATE},
+                generate_kwargs={"language": "english", "task": "transcribe"},
             )
-            text = " ".join(seg.text for seg in segments).strip()
+            text = (result.get("text") or "").strip()
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
                 return
