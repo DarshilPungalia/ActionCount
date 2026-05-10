@@ -35,15 +35,16 @@ load_dotenv()
 
 # ── LLM — Claude primary, Gemini fallback ─────────────────────────────────────
 _ANTHROPIC_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
-_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "")   # fill in .env; e.g. claude-3-5-sonnet-20241022
+_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "")   
 _AGENT_NAME      = os.getenv("AGENT_NAME", "Friday")
 
-_llm         = None
+_llm         = None   
+_llm_intent  = None   
 _llm_lock_   = __import__("threading").Lock()
 
 
 def _get_llm():
-    """Return Claude if configured, else fall back to AzureChatOpenAI (legacy), else raise."""
+    """Return the main LLM (Claude or Gemini 2.0 Flash) for response generation."""
     global _llm
     if _llm is not None:
         return _llm
@@ -60,10 +61,10 @@ def _get_llm():
                     temperature=0.4,
                     max_tokens=2048,
                 )
-                print(f"[Friday/LLM] ✅ Using Claude: {_ANTHROPIC_MODEL}")
+                print(f"[Friday/LLM] \u2705 Using Claude: {_ANTHROPIC_MODEL}")
                 return _llm
             except Exception as exc:
-                print(f"[Friday/LLM] ⚠  Claude init failed ({exc}) — trying Gemini fallback")
+                print(f"[Friday/LLM] WARNING: Claude init failed ({exc}) -- trying Gemini fallback")
 
         # Gemini fallback
         _GOOGLE_KEY = os.getenv("GOOGLE_API_KEY", "")
@@ -71,19 +72,56 @@ def _get_llm():
             try:
                 from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: PLC0415
                 _llm = ChatGoogleGenerativeAI(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.5-flash",
                     google_api_key=_GOOGLE_KEY,
                     temperature=0.4,
                 )
-                print("[Friday/LLM] ✅ Fallback: Gemini 1.5 Flash")
+                print("[Friday/LLM] \u2705 Fallback: Gemini 2.0 Flash")
                 return _llm
             except Exception as exc:
-                print(f"[Friday/LLM] ⚠  Gemini fallback failed: {exc}")
+                print(f"[Friday/LLM] WARNING: Gemini fallback failed: {exc}")
 
         raise ValueError(
             "No LLM configured. Set ANTHROPIC_API_KEY + ANTHROPIC_MODEL "
             "or GOOGLE_API_KEY in .env"
         )
+
+
+def _get_intent_llm():
+    """
+    Return a cheap/fast LLM for intent classification.
+    Uses gemini-2.0-flash-lite (higher free-tier quota, lower latency) when
+    Gemini is the active backend. Falls back to the main LLM if not available.
+    """
+    global _llm_intent
+    if _llm_intent is not None:
+        return _llm_intent
+    with _llm_lock_:
+        if _llm_intent is not None:
+            return _llm_intent
+
+        # Claude users: use the same model — Claude is fast enough for intent
+        if _ANTHROPIC_KEY and _ANTHROPIC_MODEL:
+            _llm_intent = _get_llm()
+            return _llm_intent
+
+        _GOOGLE_KEY = os.getenv("GOOGLE_API_KEY", "")
+        if _GOOGLE_KEY:
+            try:
+                from langchain_google_genai import ChatGoogleGenerativeAI  # noqa: PLC0415
+                _llm_intent = ChatGoogleGenerativeAI(
+                    model="gemini-2.5-flash",
+                    google_api_key=_GOOGLE_KEY,
+                    temperature=0.0,   # deterministic JSON output
+                )
+                print("[Friday/LLM] \u2705 Intent classifier: Gemini 2.0 Flash Lite")
+                return _llm_intent
+            except Exception as exc:
+                print(f"[Friday/LLM] WARNING: Flash Lite unavailable ({exc}) -- using main LLM for intent")
+
+        # Last resort: share the main model
+        _llm_intent = _get_llm()
+        return _llm_intent
 
 
 # ── MongoDB Checkpointer ──────────────────────────────────────────────────────
@@ -96,9 +134,12 @@ def _get_checkpointer():
     """
     Return a LangGraph-compatible BaseCheckpointSaver backed by MongoDB.
 
-    Uses AsyncMongoClient directly (not the context-manager form) so the
-    connection stays open for the lifetime of the process and never hits
-    "Cannot use MongoClient after close".
+    langgraph-checkpoint-mongodb 0.3.1+: AsyncMongoDBSaver was removed.
+    The unified MongoDBSaver now accepts a standard pymongo.MongoClient and
+    supports both sync (graph.invoke) and async (graph.ainvoke) graphs.
+
+    The client is created once and held for the process lifetime — no context
+    manager needed so we never hit 'Cannot use MongoClient after close'.
 
     Falls back to MemorySaver if MongoDB is unavailable.
     """
@@ -108,21 +149,22 @@ def _get_checkpointer():
 
     if _MONGO_URI:
         try:
-            from motor.motor_asyncio import AsyncIOMotorClient          # noqa: PLC0415
-            from langgraph.checkpoint.mongodb.aio import AsyncMongoDBSaver  # noqa: PLC0415
+            from pymongo import MongoClient                              # noqa: PLC0415
+            from langgraph.checkpoint.mongodb import MongoDBSaver       # noqa: PLC0415
 
-            motor_client = AsyncIOMotorClient(_MONGO_URI)
-            _checkpointer = AsyncMongoDBSaver(motor_client, db_name=_CHECKPOINT_DB)
-            print("[Friday/Checkpointer] ✅ AsyncMongoDBSaver connected (motor)")
+            mongo_client = MongoClient(_MONGO_URI)
+            _checkpointer = MongoDBSaver(mongo_client, db_name=_CHECKPOINT_DB)
+            print("[Friday/Checkpointer] \u2705 MongoDBSaver connected (pymongo)")
             return _checkpointer
         except Exception as exc:
-            print(f"[Friday/Checkpointer] ⚠  MongoDB unavailable ({exc}) — using MemorySaver")
+            print(f"[Friday/Checkpointer] WARNING: MongoDB unavailable ({exc}) -- using MemorySaver")
 
     # Fallback: in-memory (conversation history lost on restart, but functional)
     from langgraph.checkpoint.memory import MemorySaver  # noqa: PLC0415
     _checkpointer = MemorySaver()
-    print("[Friday/Checkpointer] ℹ️  Using MemorySaver (in-process, non-persistent)")
+    print("[Friday/Checkpointer] Using MemorySaver (in-process, non-persistent)")
     return _checkpointer
+
 
 
 
@@ -146,7 +188,8 @@ COMMAND_REGISTRY = [
     {"key": "start_camera",         "description": "Start the live webcam / begin exercise session"},
     {"key": "stop_camera",          "description": "Stop the live webcam / end exercise session"},
     {"key": "save_set",             "description": "Save the current completed set of reps"},
-    {"key": "next_set",             "description": "Save the current set (if reps > 0) and immediately start the next set"},
+    {"key": "next_set",             "description": "Save the current set (if reps > 0), start the rest timer, then automatically start the next set after rest"},
+    {"key": "stop_set",             "description": "Stop the current set (stop camera) and start the rest timer without saving — useful for switching exercise or pausing"},
     {"key": "shutdown",             "description": "Graceful app shutdown"},
     {"key": "chat",                 "description": "General conversation or question (default)"},
 ]
@@ -181,7 +224,7 @@ def intent_node(state: AgentState) -> dict:
     )
 
     try:
-        resp = _get_llm().invoke([SystemMessage(content=system), HumanMessage(content=last_msg)])
+        resp = _get_intent_llm().invoke([SystemMessage(content=system), HumanMessage(content=last_msg)])
         data = json.loads(resp.content.strip())
         return {
             "intent":            data.get("command", "chat"),
@@ -266,7 +309,7 @@ def tool_node(state: AgentState) -> dict:
             result = {"action": "shutdown"}
 
         elif intent in ("overlay_toggle", "screenshot", "reset_reps",
-                        "start_camera", "stop_camera", "save_set", "next_set"):
+                        "start_camera", "stop_camera", "save_set", "next_set", "stop_set"):
             result = {"frontend_command": intent}
 
     except Exception as exc:
@@ -410,7 +453,8 @@ def _build_addendum(intent: str, tool_result: dict) -> str:
             "start_camera":  "starting the camera",
             "stop_camera":   "stopping the camera",
             "save_set":      "saving your set",
-            "next_set":      "saving this set and starting the next one",
+            "next_set":      "saving this set and starting the rest timer for the next set",
+            "stop_set":      "stopping this set and starting your rest timer",
             "reset_reps":    "resetting the rep counter",
             "overlay_toggle": "toggling the overlay",
         }

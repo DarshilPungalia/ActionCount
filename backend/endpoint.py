@@ -211,19 +211,88 @@ def _ensure_stt_running() -> None:
     except RuntimeError:
         _loop = asyncio.get_event_loop()
 
-    def _on_transcript(transcript: str):
-        print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 dispatching to agent for all voice users")
+    # ── Pre-compile fast-path regex patterns (tracker + calorie) ─────────────
+    import re as _re
 
-        # Fast-path: voice-triggered calorie snapshot
-        _t_lower = transcript.lower()
-        _snapshot_phrases = ("take snapshot", "scan food", "scan my food",
-                             "scan this", "take a snapshot", "calorie scan")
-        if any(p in _t_lower for p in _snapshot_phrases):
-            asyncio.run_coroutine_threadsafe(
-                _broadcast_friday_async({"type": "frontend_command",
-                                         "data": {"command": "calorie_snapshot"}}),
-                _loop,
-            )
+    # Each entry: (compiled_pattern, frontend_command_key)
+    # Patterns use word boundaries (\b) + multi-keyword anchoring so that
+    # casual conversation containing individual words is NOT a false positive.
+    _FAST_PATH_RULES: list[tuple[_re.Pattern, str]] = [
+        # ── Calorie snapshot ──────────────────────────────────────────────────
+        # "scan food", "take snapshot", "calorie scan", "tell me the calories in this",
+        # "what are the calories in this", "how many calories does this have"
+        (_re.compile(
+            r"\b(?:scan|take)\b.{0,15}\b(?:food|snapshot)\b"
+            r"|\bcalorie\s+scan\b"
+            r"|\b(?:what\s+are|tell\s+me).{0,20}\bcalories\b.{0,15}\b(?:this|it)\b"
+            r"|\bhow\s+many\s+calories\b.{0,20}\b(?:this|it|have)\b"
+            r"|\bcalories\b.{0,10}\bthis\b",
+            _re.IGNORECASE,
+        ), "calorie_snapshot"),
+
+        # ── Save set ─────────────────────────────────────────────────────────
+        # "save set", "save my set", "save the ongoing set", "log set"
+        (_re.compile(
+            r"\b(?:save|log)\b.{0,20}\bset\b",
+            _re.IGNORECASE,
+        ), "save_set"),
+
+        # ── Next set ─────────────────────────────────────────────────────────
+        # "next set", "start next set", "move to next set"
+        (_re.compile(
+            r"\bnext\b.{0,15}\bset\b"
+            r"|\bmove\b.{0,10}\bnext\b.{0,10}\bset\b",
+            _re.IGNORECASE,
+        ), "next_set"),
+
+        # ── Stop set (stop current set → start rest timer) ────────────────
+        # "stop set", "stop this set", "end this set", "finish set"
+        (_re.compile(
+            r"\b(?:stop|end|finish)\b.{0,15}\bset\b",
+            _re.IGNORECASE,
+        ), "stop_set"),
+
+        # ── Reset reps ───────────────────────────────────────────────────────
+        # "reset reps", "reset my counter", "clear reps", "start over reps"
+        (_re.compile(
+            r"\breset\b.{0,15}\b(?:rep|reps|counter)\b"
+            r"|\bclear\b.{0,10}\b(?:rep|reps)\b"
+            r"|\bstart\s+over\b.{0,15}\b(?:rep|reps)\b",
+            _re.IGNORECASE,
+        ), "reset_reps"),
+
+        # ── Start camera ─────────────────────────────────────────────────────
+        # "start camera", "start webcam", "start the workout", "let's begin"
+        (_re.compile(
+            r"\bstart\b.{0,15}\b(?:camera|webcam|workout|session)\b"
+            r"|\blet['']?s\s+(?:start|begin|go)\b"
+            r"|\bbegin\b.{0,10}\b(?:workout|session)\b",
+            _re.IGNORECASE,
+        ), "start_camera"),
+
+        # ── Stop camera ──────────────────────────────────────────────────────
+        # "stop camera", "stop webcam", "end the workout"
+        (_re.compile(
+            r"\b(?:stop|end)\b.{0,15}\b(?:camera|webcam|workout|session)\b",
+            _re.IGNORECASE,
+        ), "stop_camera"),
+    ]
+
+    def _on_transcript(transcript: str):
+        print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 checking fast-path rules …")
+
+        # ── Regex fast-path: check all patterns before hitting the LLM ───────
+        for pattern, cmd in _FAST_PATH_RULES:
+            if pattern.search(transcript):
+                print(f"[FridayWS] ⚡ Fast-path match: {cmd!r} ← {transcript!r}")
+                asyncio.run_coroutine_threadsafe(
+                    _broadcast_friday_async({"type": "frontend_command",
+                                             "data": {"command": cmd}}),
+                    _loop,
+                )
+                # Don't return — still invoke the agent so Friday gives a voice ack.
+                # But do break so only the first matching rule fires.
+                break
 
         _voice_users = [
             (uname, ws)

@@ -468,7 +468,10 @@
         }
 
         case 'next_set': {
-          // Save current reps (if any) then advance
+          // saveSet() already handles the full PlanLoader flow:
+          //   save reps → PlanLoader.onSetSaved() → stop camera → rest timer → auto-start next set
+          // So next_set and save_set are identical on the frontend — the "next" behaviour
+          // is already baked into saveSet() when PlanLoader is active.
           if (typeof window.saveSet === 'function') {
             window.saveSet();
           } else {
@@ -477,6 +480,18 @@
             const saveBtn = document.getElementById('btn-save-set');
             if (reps > 0 && saveBtn && !saveBtn.disabled) saveBtn.click();
             else { const r = document.getElementById('btn-reset'); if (r) r.click(); }
+          }
+          break;
+        }
+
+        case 'stop_set': {
+          // Stop the current set → PlanLoader camera-stop listener fires →
+          // snapshots reps → starts rest timer → auto-advances + restarts camera after rest.
+          if (typeof window.stopSet === 'function') {
+            window.stopSet();
+          } else {
+            const btn = document.getElementById('btn-stop-camera');
+            if (btn && !btn.hidden) btn.click();
           }
           break;
         }

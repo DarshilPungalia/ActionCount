@@ -221,6 +221,33 @@ async function saveSet(repsOverride = null, silent = false) {
 // Expose globally — PlanLoader and voice command dispatcher need this
 window.saveSet = saveSet;
 
+// ── Stop Set — ends the current set + starts rest timer ──────────────────────
+/**
+ * Voice command: "stop set" / "end this set" / "finish set"
+ *
+ * - Clicks the Stop Camera button, which the PlanLoader's camera-stop listener
+ *   is already monitoring. That listener snapshots reps and kicks off the rest
+ *   timer → auto-advance → auto-start camera after rest.
+ * - If no plan is active (manual mode), just stops the camera so the user can
+ *   rest before clicking Start again manually.
+ * - Guard: if no reps have been done yet, warn but still stop (unlike PlanLoader's
+ *   strict 0-rep block on the stop button itself — voice users should be able to
+ *   abort a set they haven't started).
+ */
+function stopSet() {
+  const stopBtn = document.getElementById('btn-stop-camera');
+  if (!stopBtn || stopBtn.hidden) {
+    showToast('⚠️ Camera is not running — nothing to stop.', true);
+    return;
+  }
+  // Click the stop button. The PlanLoader camera-stop listener fires automatically
+  // and handles the 0-rep guard + rest timer start.
+  stopBtn.click();
+}
+
+window.stopSet = stopSet;
+
+
 // ── Save Set button click ─────────────────────────────────────────────────────
 if (saveBtn) {
   saveBtn.addEventListener('click', () => saveSet());
