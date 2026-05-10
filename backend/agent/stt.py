@@ -1,21 +1,21 @@
 """
-friday_stt.py
--------------
+stt.py
+------
 Speech-to-Text daemon for the Friday AI assistant.
 
 Stack:
-  - sounddevice     : server microphone capture (native rate, float32)
-  - scipy.signal    : polyphase resampling 44 100 Hz → 16 000 Hz
-  - Silero VAD      : voice activity detection (speech onset / offset)
-  - HuggingFace Transformers / openai/whisper-large-v3 : transcription
+  - sounddevice              : server microphone capture (native rate, float32)
+  - scipy.signal             : polyphase resampling 44 100 Hz → 16 000 Hz
+  - Silero VAD               : voice activity detection (speech onset / offset)
+  - CrispASR + Qwen3-ASR-1.7B Q4_K : transcription (subprocess, per-utterance)
 
 Flow:
-  1. PyAudio loop reads raw PCM in small chunks (512 samples @ 16 kHz)
-  2. Silero VAD scores each chunk → detects speech start / end
-  3. On speech START  → fire on_speech_start() + WebSocket listening indicator
-  4. On speech START while TTS active → call tts.stop_speaking() (barge-in)
-  5. On speech END    → fire on_speech_end(), pass buffered audio to Whisper
-  6. Whisper returns transcript → fire callback(transcript)
+  1. sounddevice InputStream reads float32 PCM at native 44 100 Hz
+  2. scipy.signal.resample_poly resamples each chunk to 16 000 Hz
+  3. Silero VAD scores each chunk → detects speech start / end
+  4. On speech START  → fire on_speech_start() + WebSocket listening indicator
+  5. On speech START while TTS active → call tts.stop_speaking() (barge-in)
+  6. On speech END    → write temp WAV, run CrispASR subprocess, fire callback(transcript)
 
 Callbacks supplied to start():
   callback(transcript: str)   — final recognised phrase
@@ -23,7 +23,9 @@ Callbacks supplied to start():
   on_speech_end()             — VAD detected end of utterance
 
 Config (.env):
-  No Azure keys needed. Model is downloaded automatically by HuggingFace cache.
+  CRISPASR_BINARY     — path to crispasr.exe (see friday_setup.ps1)
+  QWEN3_ASR_MODEL     — path to qwen3-asr-1.7b-q4_k.gguf
+  QWEN3_ASR_LANGUAGE  — transcription language (default: en)
 """
 
 from __future__ import annotations
@@ -40,7 +42,7 @@ NATIVE_RATE          = 44_100    # Mic native rate (Windows WASAPI default)
 CHUNK_DURATION_MS    = 32        # Chunk size in ms (Silero recommendation)
 CHUNK_SAMPLES        = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)   # 512  @ 16 kHz
 NATIVE_CHUNK_SAMPLES = int(NATIVE_RATE * CHUNK_DURATION_MS / 1000)   # 1411 @ 44.1 kHz
-SILENCE_CHUNKS       = 22        # ~700 ms of silence → finalize (was 15 / ~480 ms)
+SILENCE_CHUNKS       = 15        # ~480 ms of silence → finalize (was 22 / ~700 ms)
 MIN_SPEECH_CHUNKS    = 5         # ignore bursts shorter than ~160 ms (noise gate)
 SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
 SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
@@ -59,17 +61,32 @@ RMS_SPEECH_MULTIPLIER = 3.0      # speech RMS must be this many times the ambien
 RMS_EMA_ALPHA        = 0.05      # EMA weight for ambient noise update (slow, stable)
 RMS_AMBIENT_INIT     = 0.008     # conservative starting estimate
 
-# ── Hallucination filter ──────────────────────────────────────────────────────
-_HALLUCINATIONS: frozenset[str] = frozenset({
+# ── Junk / noise transcript filter ───────────────────────────────────────────
+# Catches short-clip noise artifacts that any ASR model (including Qwen3-ASR)
+# may produce on sub-word audio, as well as legacy Whisper hallucinations.
+_JUNK_TRANSCRIPTS: frozenset[str] = frozenset({
     "you", "thank you", "thanks", "bye", "goodbye", "ok", "okay",
     ".", "..", "...", "uh", "um", "hmm", "hm",
     "the", "a", "and", "subtitles by", "transcribed by",
     "www.", ".com", "amara.org", "like and subscribe",
 })
 
+# ── CrispASR / Qwen3-ASR constants (Windows paths) ───────────────────────────
+import os as _os
+CRISPASR_BINARY    = _os.path.expanduser(
+    _os.getenv("CRISPASR_BINARY",
+               _os.path.join(_os.environ.get("USERPROFILE", "~"),
+                             "crispasr", "build", "bin", "Release", "crispasr.exe"))
+)
+QWEN3_ASR_MODEL    = _os.path.expanduser(
+    _os.getenv("QWEN3_ASR_MODEL",
+               _os.path.join("models", "qwen3-asr", "qwen3-asr-1.7b-q4_k.gguf"))
+)
+QWEN3_ASR_LANGUAGE = _os.getenv("QWEN3_ASR_LANGUAGE", "en")
+
 
 class FridaySTT:
-    """Singleton Whisper + Silero VAD continuous-recognition daemon."""
+    """Singleton Qwen3-ASR (via CrispASR) + Silero VAD continuous-recognition daemon."""
 
     _instance: Optional["FridaySTT"] = None
 
@@ -83,7 +100,7 @@ class FridaySTT:
         # Lazy-loaded models
         self._vad_model     = None
         self._vad_utils     = None
-        self._whisper_pipe  = None   # HuggingFace Transformers pipeline
+        # No persistent ASR model — CrispASR is invoked as a subprocess per utterance
 
         # Fix 2: ambient RMS baseline, updated during silence periods
         self._ambient_rms: float = RMS_AMBIENT_INIT
@@ -118,8 +135,10 @@ class FridaySTT:
         )
         self._thread.start()
         print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Models : Silero VAD + HuggingFace openai/whisper-large-v3")
-        print(f"{_TAG} Mic    : SERVER default audio device (PyAudio)")
+        print(f"{_TAG} Models : Silero VAD + Qwen3-ASR-1.7B Q4_K (CrispASR)")
+        print(f"{_TAG} STT    : {CRISPASR_BINARY}")
+        print(f"{_TAG} Model  : {QWEN3_ASR_MODEL}")
+        print(f"{_TAG} Mic    : SERVER default audio device (sounddevice WASAPI)")
 
     def stop(self) -> None:
         print(f"{_TAG} Stop requested.")
@@ -158,46 +177,7 @@ class FridaySTT:
         )
         print(f"{_TAG} ✅ Silero VAD loaded.")
 
-    def _load_whisper(self):
-        if self._whisper_pipe is not None:
-            return
-        print(f"{_TAG} Loading openai/whisper-large-v3 (Transformers pipeline) …")
-        import torch  
-        from transformers import (  
-            AutoModelForSpeechSeq2Seq,
-            AutoProcessor,
-            pipeline,
-        )
-        device      = "cuda:0" if torch.cuda.is_available() else "cpu"
-        torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        model_id    = "openai/whisper-large-v3-turbo"
-
-        model = AutoModelForSpeechSeq2Seq.from_pretrained(
-            model_id,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=True,
-            use_safetensors=True,
-        )
-        model.to(device)
-
-        # Force English-only decoding; clear cached forced_decoder_ids to avoid
-        # the duplicate SuppressTokensLogitsProcessor warning.
-        model.generation_config.forced_decoder_ids = None
-        model.generation_config.language = "english"
-        model.generation_config.task     = "transcribe"
-
-        processor = AutoProcessor.from_pretrained(model_id)
-
-        # NOTE: do NOT pass generate_kwargs here — set per-call in _transcribe
-        self._whisper_pipe = pipeline(
-            "automatic-speech-recognition",
-            model=model,
-            tokenizer=processor.tokenizer,
-            feature_extractor=processor.feature_extractor,
-            torch_dtype=torch_dtype,
-            device=device,
-        )
-        print(f"{_TAG} ✅ Whisper loaded on {device} ({torch_dtype}) — forced language: English.")
+    # _load_whisper removed — CrispASR binary is invoked per-utterance in _transcribe.
 
     # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -208,7 +188,7 @@ class FridaySTT:
             print(f"{_TAG} Recognition loop attempt #{attempt}")
             try:
                 self._load_vad()
-                self._load_whisper()
+                # Whisper removed — CrispASR binary is called per-utterance in _transcribe
                 self._recognition_loop()
                 if self._stop_event.is_set():
                     break
@@ -338,27 +318,37 @@ class FridaySTT:
 
     # ── Transcription ─────────────────────────────────────────────────────────
 
-    def _is_hallucination(self, text: str) -> bool:
-        """Return True if the transcript looks like a Whisper hallucination."""
+    def _is_junk_transcript(self, text: str) -> bool:
+        """Return True if the transcript is too short or a known noise artifact."""
         t = text.lower().strip().strip(".,!?\"'")
         if len(t) < 3:
             return True
-        if t in _HALLUCINATIONS:
+        if t in _JUNK_TRANSCRIPTS:
             return True
         if any(h in t for h in ("subtitle", "transcrib", "www.", ".com", "amara")):
             return True
         return False
 
     def _transcribe(self, audio_np: "ndarray") -> None:
+        """
+        Write buffered audio to a temp WAV, pass to CrispASR Qwen3-ASR binary,
+        parse stdout for the transcript, fire callback.
+        Uses Windows-safe path handling (backslashes, %TEMP%, list-arg subprocess).
+        """
+        import tempfile     # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+        import soundfile as sf  # noqa: PLC0415
+        import numpy as np  # noqa: PLC0415
+        import re           # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+
         try:
-            import numpy as np  # noqa: PLC0415
             duration_s = len(audio_np) / SAMPLE_RATE
             if duration_s < 0.4:
                 print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.4s)")
                 return
 
-            # Fix 2: dynamic RMS gate — threshold is relative to measured ambient noise,
-            # not a hardcoded constant. This handles quiet mics and varying environments.
+            # Dynamic RMS gate — skip near-silent clips regardless of VAD result
             rms = float(np.sqrt(np.mean(audio_np ** 2)))
             dynamic_threshold = max(RMS_FLOOR, self._ambient_rms * RMS_SPEECH_MULTIPLIER)
             if rms < dynamic_threshold:
@@ -369,35 +359,85 @@ class FridaySTT:
                 )
                 return
 
-            result = self._whisper_pipe(
-                {"array": audio_np, "sampling_rate": SAMPLE_RATE},
-                return_timestamps=True,
-                generate_kwargs={
-                    "language": "english",
-                    "task": "transcribe",
-                },
-            )
+            # ── 1. Write buffered audio to temp WAV ──────────────────────────
+            # Use Path() to normalise backslashes on Windows; mktemp gives us
+            # a path string — CrispASR needs to write to it, so we cannot use
+            # mkstemp (which returns an open fd). Always clean up in finally.
+            tmp_wav = str(Path(tempfile.mktemp(suffix=".wav", prefix="friday_stt_")))
+            try:
+                sf.write(tmp_wav, audio_np, SAMPLE_RATE)
+            except Exception as exc:
+                print(f"{_TAG} ❌ Failed to write temp WAV: {exc}")
+                return
 
-            # Filter segments by no_speech_prob — primary hallucination defence
-            chunks = result.get("chunks") or []
-            filtered = [c["text"] for c in chunks if c.get("no_speech_prob", 1.0) < 0.6]
-            text = " ".join(filtered).strip()
+            # ── 2. Run CrispASR ──────────────────────────────────────────────
+            # Pass args as a list (never shell=True) — handles spaces in Windows
+            # paths correctly without manual quoting.
+            cmd = [
+                CRISPASR_BINARY,
+                "--backend", "qwen3",
+                "-m",        QWEN3_ASR_MODEL,
+                "-f",        tmp_wav,
+                "-l",        QWEN3_ASR_LANGUAGE,
+                "--no-timestamps",
+            ]
+
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                print(f"{_TAG} ❌ CrispASR timed out after 30s")
+                return
+            except FileNotFoundError:
+                print(f"{_TAG} ❌ CrispASR binary not found: {CRISPASR_BINARY}")
+                return
+            finally:
+                # Always remove the temp WAV — do not leak files in %TEMP%
+                try:
+                    import os  # noqa: PLC0415
+                    os.remove(tmp_wav)
+                except OSError:
+                    pass
+
+            if result.returncode != 0:
+                print(f"{_TAG} ❌ CrispASR error (code {result.returncode}):")
+                print(result.stderr[:500])
+                return
+
+            # ── 3. Parse transcript from stdout ─────────────────────────────
+            # Strip ANSI escape codes and progress lines (lines starting with '[')
+            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+            lines = result.stdout.strip().splitlines()
+            text_lines = [
+                ansi_escape.sub('', line).strip()
+                for line in lines
+                if line.strip() and not line.strip().startswith('[')
+            ]
+            text = " ".join(text_lines).strip()
 
             if not text:
                 print(f"{_TAG} Empty transcript (silence / noise).")
                 return
-            if self._is_hallucination(text):
-                print(f"{_TAG} 🚫 Hallucination filtered: \"{text}\"")
+
+            if self._is_junk_transcript(text):
+                print(f"{_TAG} 🚫 Junk transcript filtered: \"{text}\"")
                 return
+
             word_count = len(text.split())
-            print(f"{_TAG} Transcript ({word_count} words): \"{text}\"")
+            print(f"{_TAG} Transcript ({word_count} words, {duration_s:.1f}s): \"{text}\"")
+
             if self._callback:
                 try:
                     self._callback(text)
                 except Exception as exc:
                     print(f"{_TAG} Transcript callback error: {exc}")
+
         except Exception as exc:
-            print(f"{_TAG} Whisper transcription error: {exc}")
+            print(f"{_TAG} Transcription error: {exc}")
 
     # ── Callbacks ─────────────────────────────────────────────────────────────
 
@@ -407,7 +447,7 @@ class FridaySTT:
         noise spikes and low-confidence VAD hits from aborting TTS playback."""
         print(f"{_TAG} ⏹️  Barge-in confirmed — stopping TTS.")
         try:
-            from backend.agent.tts import stop_speaking  # noqa: PLC0415
+            from backend.agent.tts import stop_speaking  # noqa: PLC0415  (tts.py = FridayTTS shim)
             stop_speaking()
         except Exception:
             pass

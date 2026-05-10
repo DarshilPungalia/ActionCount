@@ -211,3 +211,6 @@ __marimo__/
 
 # User Data
 /data
+
+#Models
+/models
