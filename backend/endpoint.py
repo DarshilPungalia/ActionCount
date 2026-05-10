@@ -75,6 +75,27 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
+# ── Force UTF-8 console output (Windows cp1252 can't print emoji) ─────────────
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# ── CLI flags (parsed before uvicorn takes over argv) ─────────────────────────
+# Use parse_known_args so uvicorn's own args are not rejected.
+import argparse as _argparse
+_ap = _argparse.ArgumentParser(add_help=False)
+_ap.add_argument(
+    "--use_tts",
+    default="true",
+    metavar="BOOL",
+    help="Set to 'false' to disable TTS (GPU OOM workaround). STT + agent still run.",
+)
+_cli, _ = _ap.parse_known_args()
+USE_TTS: bool = _cli.use_tts.lower() not in ("false", "0", "no", "off")
+if not USE_TTS:
+    print("[ActionCount] TTS DISABLED via --use_tts=false (STT + agent still active)")
+
 # ── Environment ───────────────────────────────────────────────────────────────
 load_dotenv()
 SECRET_KEY                = os.getenv("SECRET_KEY", "fallback-secret-change-me")
@@ -1174,8 +1195,8 @@ async def _handle_friday_message(
                                 "data": {"command": cmd}})
 
         # TTS audio
-        if response_text and channel == "voice":
-            print(f"[FridayWS] 🔊 Synthesising TTS for {len(response_text)}-char response …")
+        if response_text and channel == "voice" and USE_TTS:
+            print(f"[FridayWS] Synthesising TTS for {len(response_text)}-char response ...")
             await ws.send_json(speaking_indicator(True))
             t1 = time.monotonic()
             # Resolve user's preferred voice (stored as top-level field, separate from profile)
@@ -1185,12 +1206,16 @@ async def _handle_friday_message(
             except Exception:
                 pass
             mp3 = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
-            print(f"[FridayWS] 🔊 TTS done in {time.monotonic()-t1:.2f}s "
-                  f"({'got audio' if mp3 else 'no audio — check ELEVENLABS_API_KEY'})")
+            print(f"[FridayWS] TTS done in {time.monotonic()-t1:.2f}s "
+                  f"({'got audio' if mp3 else 'no audio'})")
             if mp3:
                 await ws.send_json(to_ws_envelope(mp3, response_text))
             await ws.send_json(speaking_indicator(False))
-            print(f"[FridayWS] ✅ Response cycle complete for {username!r}")
+            print(f"[FridayWS] Response cycle complete for {username!r}")
+        elif response_text and channel == "voice" and not USE_TTS:
+            # TTS disabled -- send response as text so the user still sees it
+            print(f"[FridayWS] TTS disabled -- sending response as text")
+            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
         elif response_text:
             # Text channel — send as plain friday_text message
             print(f"[FridayWS] 💬 Sending text response on text channel")
@@ -1204,7 +1229,15 @@ async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
     """
     Synthesise `text` via TTS and push audio to the Friday WebSocket.
     Used for posture corrections (6 s cooldown) and failure-motivation phrases.
+    No-op when USE_TTS=False.
     """
+    if not USE_TTS:
+        # TTS disabled -- push as text instead so the user still sees the message
+        try:
+            await ws.send_json({"type": "friday_text", "data": {"text": text}})
+        except Exception:
+            pass
+        return
     try:
         user_voice_id = None
         try:
@@ -1217,7 +1250,7 @@ async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
             await ws.send_json(to_ws_envelope(mp3, text))
         await ws.send_json(speaking_indicator(False))
     except Exception as exc:
-        print(f"[FridayTTS] ❌ push error for {username!r}: {exc}")
+        print(f"[FridayTTS] push error for {username!r}: {exc}")
 
 
 # ── /ws/friday WebSocket ──────────────────────────────────────────────────────
@@ -1415,4 +1448,7 @@ def _kps_to_list(kps: np.ndarray) -> list:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Strip our custom --use_tts flag before handing argv to uvicorn
+    import sys as _sys
+    _sys.argv = [a for a in _sys.argv if not a.startswith("--use_tts")]
     uvicorn.run("endpoint:app", host="127.0.0.1", port=8000, reload=True)
