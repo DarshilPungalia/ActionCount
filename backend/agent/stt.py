@@ -43,7 +43,11 @@ CHUNK_DURATION_MS    = 32        # Chunk size in ms (Silero recommendation)
 CHUNK_SAMPLES        = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)   # 512  @ 16 kHz
 NATIVE_CHUNK_SAMPLES = int(NATIVE_RATE * CHUNK_DURATION_MS / 1000)   # 1411 @ 44.1 kHz
 SILENCE_CHUNKS       = 15        # ~480 ms of silence → finalize (was 22 / ~700 ms)
-MIN_SPEECH_CHUNKS    = 5         # ignore bursts shorter than ~160 ms (noise gate)
+MIN_SPEECH_CHUNKS    = 2         # consecutive high-conf chunks to confirm speech onset
+                                 # (was 5 / ~160 ms — too high, misses short single words)
+LOOKBACK_CHUNKS      = 10        # rolling lookback window of ALL chunks kept before onset
+                                 # (~320 ms) — guarantees sub-threshold onset phonemes are
+                                 # captured even if they never cross SPEECH_THRESHOLD
 SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
 SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
 
@@ -208,10 +212,17 @@ class FridaySTT:
         (get_speech_timestamps, _, _, _, _) = self._vad_utils
 
         speech_buffer:      list[np.ndarray] = []
-        _pre_buffer:        list[np.ndarray] = []   # VAD pre-buffer
         silence_count:      int  = 0
         is_speaking:        bool = False
         speech_chunk_count: int  = 0
+
+        # Rolling lookback — ALL chunks (regardless of VAD confidence) captured
+        # unconditionally so that sub-threshold onset phonemes (e.g. the unvoiced
+        # 's' in "stop", or the soft attack of any word) are always included when
+        # speech is finally confirmed.  Replaces the old _pre_buffer which only
+        # stored high-confidence chunks and therefore cut off word beginnings.
+        from collections import deque as _deque  # noqa: PLC0415
+        _lookback_buf: _deque = _deque(maxlen=LOOKBACK_CHUNKS)
 
         # Fix 1: barge-in state — tracked separately from VAD onset
         _barge_in_count: int  = 0
@@ -244,6 +255,11 @@ class FridaySTT:
                 chunk_tensor = torch.from_numpy(chunk)
                 confidence   = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
 
+                # Always add to lookback BEFORE any branching so that every
+                # chunk — including sub-threshold onset phonemes — is available
+                # when speech is confirmed a few chunks later.
+                _lookback_buf.append(chunk)
+
                 if confidence > SPEECH_THRESHOLD:
                     # ── Speech detected ───────────────────────────────────────
 
@@ -261,13 +277,14 @@ class FridaySTT:
 
                     if not is_speaking:
                         speech_chunk_count += 1
-                        _pre_buffer.append(chunk)  # accumulate into pre-buffer
                         if speech_chunk_count >= MIN_SPEECH_CHUNKS:
                             is_speaking   = True
                             silence_count = 0
-                            speech_buffer.extend(_pre_buffer)  # flush pre-speech audio in
-                            _pre_buffer = []
-                            print(f"{_TAG} 🎙️  Speech STARTED (VAD confidence={confidence:.2f})")
+                            # Seed speech_buffer from the full lookback window so that
+                            # pre-onset audio (below VAD threshold) is always included.
+                            # This is the fix for the first-word / single-word cutoff.
+                            speech_buffer = list(_lookback_buf)
+                            print(f"{_TAG} Speech STARTED (VAD confidence={confidence:.2f}, lookback={len(_lookback_buf)} chunks)")
                             self._fire_speech_start()
                     else:
                         speech_buffer.append(chunk)
@@ -282,8 +299,7 @@ class FridaySTT:
 
                     if not is_speaking:
                         speech_chunk_count = max(0, speech_chunk_count - 1)
-                        # Keep only the last MIN_SPEECH_CHUNKS chunks as a rolling pre-buffer
-                        _pre_buffer = _pre_buffer[-(MIN_SPEECH_CHUNKS):]
+                        # (lookback_buf self-manages via deque maxlen — no manual trim needed)
 
                         # Fix 2: calibrate ambient noise during confirmed silence
                         chunk_rms = float(np.sqrt(np.mean(chunk ** 2)))
@@ -303,7 +319,7 @@ class FridaySTT:
 
                         audio_np = np.concatenate(speech_buffer, axis=0)
                         speech_buffer      = []
-                        _pre_buffer        = []
+                        _lookback_buf.clear()
                         silence_count      = 0
                         is_speaking        = False
                         speech_chunk_count = 0

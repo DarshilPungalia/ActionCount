@@ -180,6 +180,18 @@ async def _broadcast_friday_async(msg: dict) -> None:
             except Exception:
                 pass
 
+
+async def _broadcast_friday_all_async(msg: dict) -> None:
+    """Async coroutine — send msg to ALL connected Friday users (any channel).
+    Used for navigation frontend_commands so text-channel (chatbot) pages
+    can still receive page-navigation directives.
+    """
+    for username, ws in list(_friday_ws_connections.items()):
+        try:
+            await ws.send_json(msg)
+        except Exception:
+            pass
+
 # Keep the sync wrapper name for any legacy callers, now implemented safely
 def _broadcast_friday(msg: dict) -> None:
     """
@@ -211,16 +223,25 @@ def _ensure_stt_running() -> None:
     except RuntimeError:
         _loop = asyncio.get_event_loop()
 
-    # ── Pre-compile fast-path regex patterns (tracker + calorie) ─────────────
+    # ── Pre-compile fast-path regex patterns ────────────────────────────────
     import re as _re
+
+    # Navigation commands are broadcast to ALL channels (voice + text) because
+    # the chatbot page connects as text-channel and still needs nav commands.
+    # They also skip LLM invocation — the page navigates instantly so a TTS
+    # ack would be cut off anyway.
+    _NAV_COMMANDS: frozenset = frozenset({
+        "navigate_tracker", "navigate_dashboard", "navigate_chatbot",
+        "navigate_plans",   "navigate_metrics",   "navigate_calorie",
+        "navigate_back",
+    })
 
     # Each entry: (compiled_pattern, frontend_command_key)
     # Patterns use word boundaries (\b) + multi-keyword anchoring so that
     # casual conversation containing individual words is NOT a false positive.
     _FAST_PATH_RULES: list[tuple[_re.Pattern, str]] = [
-        # ── Calorie snapshot ──────────────────────────────────────────────────
-        # "scan food", "take snapshot", "calorie scan", "tell me the calories in this",
-        # "what are the calories in this", "how many calories does this have"
+
+        # ── Calorie snapshot ─────────────────────────────────────────────────
         (_re.compile(
             r"\b(?:scan|take)\b.{0,15}\b(?:food|snapshot)\b"
             r"|\bcalorie\s+scan\b"
@@ -231,29 +252,25 @@ def _ensure_stt_running() -> None:
         ), "calorie_snapshot"),
 
         # ── Save set ─────────────────────────────────────────────────────────
-        # "save set", "save my set", "save the ongoing set", "log set"
         (_re.compile(
             r"\b(?:save|log)\b.{0,20}\bset\b",
             _re.IGNORECASE,
         ), "save_set"),
 
         # ── Next set ─────────────────────────────────────────────────────────
-        # "next set", "start next set", "move to next set"
         (_re.compile(
             r"\bnext\b.{0,15}\bset\b"
             r"|\bmove\b.{0,10}\bnext\b.{0,10}\bset\b",
             _re.IGNORECASE,
         ), "next_set"),
 
-        # ── Stop set (stop current set → start rest timer) ────────────────
-        # "stop set", "stop this set", "end this set", "finish set"
+        # ── Stop set ─────────────────────────────────────────────────────────
         (_re.compile(
             r"\b(?:stop|end|finish)\b.{0,15}\bset\b",
             _re.IGNORECASE,
         ), "stop_set"),
 
         # ── Reset reps ───────────────────────────────────────────────────────
-        # "reset reps", "reset my counter", "clear reps", "start over reps"
         (_re.compile(
             r"\breset\b.{0,15}\b(?:rep|reps|counter)\b"
             r"|\bclear\b.{0,10}\b(?:rep|reps)\b"
@@ -262,37 +279,116 @@ def _ensure_stt_running() -> None:
         ), "reset_reps"),
 
         # ── Start camera ─────────────────────────────────────────────────────
-        # "start camera", "start webcam", "start the workout", "let's begin"
         (_re.compile(
             r"\bstart\b.{0,15}\b(?:camera|webcam|workout|session)\b"
-            r"|\blet['']?s\s+(?:start|begin|go)\b"
+            r"|\blet['\u2019]?s\s+(?:start|begin|go)\b"
             r"|\bbegin\b.{0,10}\b(?:workout|session)\b",
             _re.IGNORECASE,
         ), "start_camera"),
 
         # ── Stop camera ──────────────────────────────────────────────────────
-        # "stop camera", "stop webcam", "end the workout"
         (_re.compile(
             r"\b(?:stop|end)\b.{0,15}\b(?:camera|webcam|workout|session)\b",
             _re.IGNORECASE,
         ), "stop_camera"),
+
+        # ════════════════════════════════════════════════════════════════════
+        # SITE NAVIGATION FAST-TRACKS
+        # These bypass the LLM entirely and are broadcast to ALL channels so
+        # chatbot (text-channel) and other pages can all navigate via voice.
+        # ════════════════════════════════════════════════════════════════════
+
+        # ── Navigate → Tracker ───────────────────────────────────────────────
+        # "go to tracker", "back to workout", "start tracking", "go home"
+        (_re.compile(
+            r"\b(?:go\s+to|open|back\s+to|switch\s+to)\b.{0,15}\btracker\b"
+            r"|\bgo\s+home\b"
+            r"|\bback\s+to\s+(?:workout|exercise|training)\b"
+            r"|\bstart\s+tracking\b",
+            _re.IGNORECASE,
+        ), "navigate_tracker"),
+
+        # ── Navigate → Dashboard ─────────────────────────────────────────────
+        # "go to dashboard", "show my stats", "show my progress"
+        (_re.compile(
+            r"\b(?:go\s+to|open|show|switch\s+to)\b.{0,15}\bdashboard\b"
+            r"|\bshow\s+(?:my\s+)?(?:stats|progress|history)\b",
+            _re.IGNORECASE,
+        ), "navigate_dashboard"),
+
+        # ── Navigate → Chatbot / AI Coach ────────────────────────────────────
+        # "open chatbot", "chat with friday", "go to coach", "talk to AI"
+        (_re.compile(
+            r"\b(?:go\s+to|open|switch\s+to)\b.{0,15}\b(?:chatbot|chat|coach)\b"
+            r"|\bchat\s+with\s+(?:friday|ai|coach)\b"
+            r"|\btalk\s+to\s+(?:friday|ai)\b",
+            _re.IGNORECASE,
+        ), "navigate_chatbot"),
+
+        # ── Navigate → Plans ─────────────────────────────────────────────────
+        # "go to plans", "show my workout plan", "view my schedule"
+        (_re.compile(
+            r"\b(?:go\s+to|open|show|view|switch\s+to)\b.{0,15}\bplans?\b"
+            r"|\bshow\s+(?:my\s+)?(?:workout\s+plan|schedule|weekly\s+plan)\b"
+            r"|\bview\s+(?:my\s+)?(?:workout\s+plan|schedule)\b",
+            _re.IGNORECASE,
+        ), "navigate_plans"),
+
+        # ── Navigate → Metrics ───────────────────────────────────────────────
+        # "go to metrics", "track my weight", "log my weight"
+        (_re.compile(
+            r"\b(?:go\s+to|open|show|switch\s+to)\b.{0,15}\bmetrics\b"
+            r"|\bshow\s+(?:my\s+)?(?:body\s+metrics|weight|measurements)\b"
+            r"|\btrack\s+(?:my\s+)?(?:weight|body)\b"
+            r"|\blog\s+(?:my\s+)?(?:weight|height|body)\b",
+            _re.IGNORECASE,
+        ), "navigate_metrics"),
+
+        # ── Navigate → Calorie Scanner ───────────────────────────────────────
+        # "open calorie scanner", "go to food tracking"
+        # (distinct from calorie_snapshot which triggers a scan on current page)
+        (_re.compile(
+            r"\b(?:go\s+to|open|switch\s+to)\b.{0,20}\b(?:calorie\s+(?:scanner|page|tracker))\b"
+            r"|\bopen\s+(?:food\s+scanner|food\s+tracking)\b"
+            r"|\bgo\s+to\s+food\s+tracking\b",
+            _re.IGNORECASE,
+        ), "navigate_calorie"),
+
+        # ── Navigate → Back ──────────────────────────────────────────────────
+        # "go back", "take me back", "back to previous"
+        (_re.compile(
+            r"\bgo\s+back\b"
+            r"|\btake\s+me\s+back\b"
+            r"|\bback\s+to\s+previous\b",
+            _re.IGNORECASE,
+        ), "navigate_back"),
     ]
 
     def _on_transcript(transcript: str):
         print(f"[FridayWS] \U0001f4e8 Transcript received \u2192 checking fast-path rules …")
 
         # ── Regex fast-path: check all patterns before hitting the LLM ───────
+        _fast_matched_nav = False
         for pattern, cmd in _FAST_PATH_RULES:
             if pattern.search(transcript):
                 print(f"[FridayWS] ⚡ Fast-path match: {cmd!r} ← {transcript!r}")
+                _is_nav = cmd in _NAV_COMMANDS
+                # Navigation → broadcast to ALL channels (chatbot is text-channel)
+                # Other commands → voice-channel only
+                broadcast_fn = _broadcast_friday_all_async if _is_nav else _broadcast_friday_async
                 asyncio.run_coroutine_threadsafe(
-                    _broadcast_friday_async({"type": "frontend_command",
-                                             "data": {"command": cmd}}),
+                    broadcast_fn({"type": "frontend_command",
+                                  "data": {"command": cmd}}),
                     _loop,
                 )
-                # Don't return — still invoke the agent so Friday gives a voice ack.
-                # But do break so only the first matching rule fires.
+                if _is_nav:
+                    _fast_matched_nav = True
+                # Only first matching rule fires
                 break
+
+        # Navigation pages immediately — no LLM ack needed (would be cut off anyway)
+        if _fast_matched_nav:
+            return
 
         _voice_users = [
             (uname, ws)

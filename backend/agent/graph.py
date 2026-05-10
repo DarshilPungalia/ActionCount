@@ -192,6 +192,14 @@ COMMAND_REGISTRY = [
     {"key": "stop_set",             "description": "Stop the current set (stop camera) and start the rest timer without saving — useful for switching exercise or pausing"},
     {"key": "shutdown",             "description": "Graceful app shutdown"},
     {"key": "chat",                 "description": "General conversation or question (default)"},
+    # ── Site navigation ───────────────────────────────────────────────────────────────
+    {"key": "navigate_tracker",   "description": "Navigate to the main exercise tracker page"},
+    {"key": "navigate_dashboard", "description": "Navigate to the user's training dashboard and stats"},
+    {"key": "navigate_chatbot",   "description": "Navigate to the AI coach chatbot page"},
+    {"key": "navigate_plans",     "description": "Navigate to the weekly workout plans page"},
+    {"key": "navigate_metrics",   "description": "Navigate to the body metrics tracking page"},
+    {"key": "navigate_calorie",   "description": "Navigate to the calorie/food scanner page"},
+    {"key": "navigate_back",      "description": "Go back to the previous page in the browser history"},
 ]
 
 _COMMAND_LIST_STR = "\n".join(f"  {c['key']}: {c['description']}" for c in COMMAND_REGISTRY)
@@ -308,8 +316,14 @@ def tool_node(state: AgentState) -> dict:
         elif intent == "shutdown":
             result = {"action": "shutdown"}
 
-        elif intent in ("overlay_toggle", "screenshot", "reset_reps",
-                        "start_camera", "stop_camera", "save_set", "next_set", "stop_set"):
+        elif intent in (
+            "overlay_toggle", "screenshot", "reset_reps",
+            "start_camera", "stop_camera", "save_set", "next_set", "stop_set",
+            # Site navigation
+            "navigate_tracker", "navigate_dashboard", "navigate_chatbot",
+            "navigate_plans",   "navigate_metrics",   "navigate_calorie",
+            "navigate_back",
+        ):
             result = {"frontend_command": intent}
 
     except Exception as exc:
@@ -450,13 +464,20 @@ def _build_addendum(intent: str, tool_result: dict) -> str:
 
     if tool_result.get("frontend_command"):
         cmd_labels = {
-            "start_camera":  "starting the camera",
-            "stop_camera":   "stopping the camera",
-            "save_set":      "saving your set",
-            "next_set":      "saving this set and starting the rest timer for the next set",
-            "stop_set":      "stopping this set and starting your rest timer",
-            "reset_reps":    "resetting the rep counter",
-            "overlay_toggle": "toggling the overlay",
+            "start_camera":       "starting the camera",
+            "stop_camera":        "stopping the camera",
+            "save_set":           "saving your set",
+            "next_set":           "saving this set and starting the rest timer for the next set",
+            "stop_set":           "stopping this set and starting your rest timer",
+            "reset_reps":         "resetting the rep counter",
+            "overlay_toggle":     "toggling the overlay",
+            "navigate_tracker":   "taking you to the tracker",
+            "navigate_dashboard": "taking you to the dashboard",
+            "navigate_chatbot":   "taking you to the AI coach",
+            "navigate_plans":     "taking you to the workout plans",
+            "navigate_metrics":   "taking you to the body metrics page",
+            "navigate_calorie":   "taking you to the calorie scanner",
+            "navigate_back":      "going back to the previous page",
         }
         label = cmd_labels.get(tool_result["frontend_command"],
                                tool_result["frontend_command"].replace("_", " "))

@@ -147,6 +147,21 @@ function openFridayWS() {
         const cmd = msg.data?.command || '';
         if (cmd === 'calorie_snapshot' || cmd === 'take_snapshot') {
           takeSnapshot();
+        } else {
+          // Site navigation commands
+          const _navMap = {
+            navigate_tracker:   '/',
+            navigate_dashboard: '/dashboard',
+            navigate_chatbot:   '/chatbot',
+            navigate_plans:     '/plans',
+            navigate_metrics:   '/metrics',
+            navigate_calorie:   '/calorie',
+          };
+          if (cmd in _navMap) {
+            window.location.href = _navMap[cmd];
+          } else if (cmd === 'navigate_back') {
+            history.back();
+          }
         }
       }
       if (msg.type === 'calorie_result' && msg.data?.foods?.length) {

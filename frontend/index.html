@@ -510,10 +510,32 @@
 
         case 'calorie_snapshot':
         case 'open_calorie': {
-          // Voice command: navigate to calorie scanner page
           window.location.href = '/calorie';
           break;
         }
+
+        // ── Site navigation ──────────────────────────────────────────────────
+        case 'navigate_tracker':
+          window.location.href = '/';
+          break;
+        case 'navigate_dashboard':
+          window.location.href = '/dashboard';
+          break;
+        case 'navigate_chatbot':
+          window.location.href = '/chatbot';
+          break;
+        case 'navigate_plans':
+          window.location.href = '/plans';
+          break;
+        case 'navigate_metrics':
+          window.location.href = '/metrics';
+          break;
+        case 'navigate_calorie':
+          window.location.href = '/calorie';
+          break;
+        case 'navigate_back':
+          history.back();
+          break;
 
         default:
           console.log('[Friday] unhandled command:', cmd);
