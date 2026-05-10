@@ -170,12 +170,7 @@ function openFridayWS() {
       if (msg.type === 'friday_listening') {
         setWaveMode(msg.data?.active ? 'listening' : 'idle');
       }
-      if (msg.type === 'friday_speaking') {
-        setWaveMode(msg.data?.active ? 'responding' : 'idle');
-      }
-      if (msg.type === 'friday_audio' && msg.data?.audio_b64) {
-        try { new Audio('data:audio/mp3;base64,' + msg.data.audio_b64).play().catch(() => {}); } catch(_) {}
-      }
+      // friday_speaking and friday_audio removed (TTS disabled)
     } catch (_) {}
   };
 

@@ -465,11 +465,10 @@ class FridaySTT:
         high-confidence (≥ BARGE_IN_THRESHOLD) VAD detections. This prevents
         noise spikes and low-confidence VAD hits from aborting TTS playback."""
         print(f"{_TAG} ⏹️  Barge-in confirmed — stopping TTS.")
-        try:
-            from backend.agent.tts import stop_speaking  # noqa: PLC0415  (tts.py = FridayTTS shim)
-            stop_speaking()
-        except Exception:
-            pass
+        # TTS removed — barge-in stop_speaking() is a no-op until TTS is re-enabled.
+        # See docs/tts_integration_reference.md.
+        # from backend.agent.tts import stop_speaking; stop_speaking()
+        pass
 
     def _fire_speech_start(self) -> None:
         """Fire the on_speech_start callback. Barge-in is handled separately

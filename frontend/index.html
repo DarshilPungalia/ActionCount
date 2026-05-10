@@ -245,31 +245,6 @@
   <!-- Legacy id kept so old setSpeakingIndicator calls still work -->
   <div id="friday-speaking-dot" hidden style="display:none;"></div>
 
-  <!-- ── Friday Voice Picker ──────────────────────────────────────────────── -->
-  <div id="friday-voice-picker" style="
-    position:fixed; top:62px; left:50%; transform:translateX(-50%);
-    z-index:999; display:none; align-items:center; gap:6px;
-    background:rgba(8,11,22,0.78); backdrop-filter:blur(14px);
-    border:1px solid rgba(255,255,255,0.08); border-radius:999px;
-    padding:5px 12px; pointer-events:auto;
-    font-family:'Inter',sans-serif; font-size:0.72rem; color:#64748b;
-    box-shadow:0 2px 12px rgba(0,0,0,0.35);">
-    <span style="font-size:0.7rem;letter-spacing:.06em;text-transform:uppercase;color:#475569;">🎙️ Voice</span>
-    <button id="voice-btn-rachel"
-      onclick="setFridayVoice('21m00Tcm4TlvDq8ikWAM','Rachel')"
-      style="padding:3px 10px;border-radius:999px;border:1px solid transparent;
-             font-size:0.72rem;font-weight:600;cursor:pointer;
-             background:transparent;color:#94a3b8;transition:all .15s;"
-      title="Rachel (ElevenLabs)">Rachel</button>
-  </div>
-  <style>
-    .friday-voice-active {
-      background: rgba(99,102,241,0.18) !important;
-      border-color: rgba(99,102,241,0.45) !important;
-      color: #a5b4fc !important;
-    }
-  </style>
-
   <div id="friday-calorie-popup" aria-live="polite" style="
     position:fixed; bottom:28px; left:50%; transform:translateX(-50%) translateY(24px);
     z-index:1001; min-width:320px; max-width:420px;
@@ -570,7 +545,6 @@
         const p=document.getElementById('friday-calorie-popup');
         if(p){p.style.opacity='0';p.style.transform='translateX(-50%) translateY(24px)';}
       },
-      playAudio(b64){try{new Audio('data:audio/mp3;base64,'+b64).play().catch(()=>{});}catch(_){}},
 
       // ── Waveform HUD helpers ───────────────────────────────────────────────
       _waveHud() { return document.getElementById('friday-wave-hud'); },
@@ -640,10 +614,9 @@
         try {
           const msg = JSON.parse(evt.data);
           if (msg.type === 'calorie_result')       FridayHUD.showCaloriePopup(msg.data);
-          else if (msg.type === 'friday_audio')    FridayHUD.playAudio(msg.data.audio_b64);
-          else if (msg.type === 'friday_speaking') FridayHUD.setSpeakingIndicator(msg.data.active);
-          else if (msg.type === 'friday_listening') FridayHUD.setListeningIndicator(msg.data.active);
           else if (msg.type === 'frontend_command') dispatchFrontendCommand(msg.data.command);
+          // friday_text: agent response shown as text (TTS removed)
+          else if (msg.type === 'friday_text')     console.log('[Friday]', msg.data?.text);
         } catch(_) {}
       };
 
@@ -662,52 +635,7 @@
   })();
   </script>
 
-  <!-- ── Friday Voice Picker Logic ──────────────────────────────────────── -->
-  <script>
-  'use strict';
-
-  const RACHEL_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
-
-  // Show picker and always activate Rachel
-  (async function initVoicePicker() {
-    const picker = document.getElementById('friday-voice-picker');
-    if (picker) picker.style.display = 'flex';
-    // Always highlight Rachel
-    _highlightVoice(RACHEL_VOICE_ID);
-    // Silently ensure backend is set to Rachel
-    try {
-      await apiFetch('/api/user/voice', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ voice_id: RACHEL_VOICE_ID }),
-      });
-    } catch (_) { /* non-fatal */ }
-  })();
-
-  function _highlightVoice(voiceId) {
-    document.querySelectorAll('#friday-voice-picker button').forEach(btn =>
-      btn.classList.remove('friday-voice-active')
-    );
-    if (voiceId === RACHEL_VOICE_ID) {
-      document.getElementById('voice-btn-rachel')?.classList.add('friday-voice-active');
-    }
-  }
-
-  async function setFridayVoice(voiceId, voiceName) {
-    try {
-      await apiFetch('/api/user/voice', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ voice_id: voiceId }),
-      });
-      _highlightVoice(voiceId);
-      console.log(`[FridayVoice] ${voiceName} (${voiceId})`);
-      if (window.showToast) window.showToast(`🎙️ Voice: ${voiceName}`);
-    } catch (err) {
-      console.warn('[FridayVoice] Failed to set voice:', err.message);
-    }
-  }
-  </script>
+  <!-- Friday Voice Picker removed (TTS disabled — see docs/tts_integration_reference.md) -->
 
 <script src="/static/js/page_transitions.js"></script>
 </body>

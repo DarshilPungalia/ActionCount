@@ -81,20 +81,6 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-# ── CLI flags (parsed before uvicorn takes over argv) ─────────────────────────
-# Use parse_known_args so uvicorn's own args are not rejected.
-import argparse as _argparse
-_ap = _argparse.ArgumentParser(add_help=False)
-_ap.add_argument(
-    "--use_tts",
-    default="true",
-    metavar="BOOL",
-    help="Set to 'false' to disable TTS (GPU OOM workaround). STT + agent still run.",
-)
-_cli, _ = _ap.parse_known_args()
-USE_TTS: bool = _cli.use_tts.lower() not in ("false", "0", "no", "off")
-if not USE_TTS:
-    print("[ActionCount] TTS DISABLED via --use_tts=false (STT + agent still active)")
 
 # ── Environment ───────────────────────────────────────────────────────────────
 load_dotenv()
@@ -127,26 +113,8 @@ from backend.utils.validation import (
 )
 from backend.agent.chatbot import _get_response
 from backend.agent.graph import invoke_friday
-if USE_TTS:
-    from backend.agent.tts import (
-        speak as tts_speak,
-        to_ws_envelope,
-        speaking_indicator,
-        list_voices,
-        VOICES as TTS_VOICES,
-        _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
-    )
-else:
-    # TTS disabled via --use_tts=false — define no-op stubs so the rest of
-    # endpoint.py compiles and runs without importing tts.py at all.
-    # This prevents the Voxtral warmup subprocess from ever starting.
-    def tts_speak(text, voice_id=None):          return None       # noqa
-    def to_ws_envelope(audio_bytes, text=''):    return {}         # noqa
-    def speaking_indicator(active):              return {}         # noqa
-    def list_voices():                           return []         # noqa
-    def stop_speaking():                         pass              # noqa
-    TTS_VOICES:       dict = {}
-    TTS_DEFAULT_VOICE: str = ''
+# TTS removed — see docs/tts_integration_reference.md to re-enable
+
 from backend.agent.stt import FridaySTT
 
 # ── Security helpers ──────────────────────────────────────────────────────────
@@ -635,35 +603,14 @@ async def save_profile(body: UserProfile, username: str = Depends(_get_current_u
 
 @app.get("/api/voices")
 async def get_voices(_: str = Depends(_get_current_user)):
-    """
-    Return available Friday TTS voices.
-    Response: {"voices": [{"name": "Sebastian", "voice_id": "1SaGpH4wLZDmppsPYVpx"}, ...],
-               "default": "<current default voice_id>"}
-    """
-    from backend.agent.tts import VOICES, _DEFAULT_VOICE_ID  # noqa: PLC0415
-    return {
-        "voices":  [{"name": k, "voice_id": v} for k, v in VOICES.items()],
-        "default": _DEFAULT_VOICE_ID,
-    }
+    """TTS removed. Returns empty list. See docs/tts_integration_reference.md."""
+    return {"voices": [], "default": ""}
 
 
 @app.post("/api/user/voice")
 async def set_voice(body: dict, username: str = Depends(_get_current_user)):
-    """
-    Save the user's preferred Friday TTS voice.
-    Body: {"voice_id": "<eleven_labs_voice_id>"}
-    """
-    from backend.agent.tts import VOICES  # noqa: PLC0415
-    voice_id = (body or {}).get("voice_id", "").strip()
-    valid_ids = set(VOICES.values())
-    if not voice_id or voice_id not in valid_ids:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid voice_id. Choose one of: {list(valid_ids)}",
-        )
-    db.set_user_voice(username, voice_id)
-    voice_name = next((k for k, v in VOICES.items() if v == voice_id), voice_id)
-    return {"status": "saved", "voice_id": voice_id, "voice_name": voice_name}
+    """TTS removed. Silently accepts so frontend voice picker doesn't crash."""
+    return {"status": "noop", "voice_id": "", "voice_name": ""}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1140,18 +1087,8 @@ async def ws_stream(websocket: WebSocket, session_id: str):
 
             await websocket.send_json({**payload, "skipped": False})
 
-            # ── Drain TTS queue (posture corrections + motivation) ─────────────────
-            while not session.tts_queue.empty():
-                try:
-                    _kind, _text = session.tts_queue.get_nowait()
-                    # Push to all Friday WS connections in voice mode
-                    for _uname, _fws in list(_friday_ws_connections.items()):
-                        if _get_user_channel(_uname) == "voice":
-                            asyncio.create_task(
-                                _push_friday_tts(_fws, _uname, _text)
-                            )
-                except Exception:
-                    break
+            # TTS queue removed — posture corrections sent as friday_text
+            # See docs/tts_integration_reference.md to restore audio push.
 
     except WebSocketDisconnect:
         pass
@@ -1206,32 +1143,10 @@ async def _handle_friday_message(
             await ws.send_json({"type": "frontend_command",
                                 "data": {"command": cmd}})
 
-        # TTS audio
-        if response_text and channel == "voice" and USE_TTS:
-            print(f"[FridayWS] Synthesising TTS for {len(response_text)}-char response ...")
-            await ws.send_json(speaking_indicator(True))
-            t1 = time.monotonic()
-            # Resolve user's preferred voice (stored as top-level field, separate from profile)
-            user_voice_id = None
-            try:
-                user_voice_id = db.get_user_voice(username) or None
-            except Exception:
-                pass
-            mp3 = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
-            print(f"[FridayWS] TTS done in {time.monotonic()-t1:.2f}s "
-                  f"({'got audio' if mp3 else 'no audio'})")
-            if mp3:
-                await ws.send_json(to_ws_envelope(mp3, response_text))
-            await ws.send_json(speaking_indicator(False))
+        # Send response as text (TTS removed — see docs/tts_integration_reference.md)
+        if response_text:
+            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
             print(f"[FridayWS] Response cycle complete for {username!r}")
-        elif response_text and channel == "voice" and not USE_TTS:
-            # TTS disabled -- send response as text so the user still sees it
-            print(f"[FridayWS] TTS disabled -- sending response as text")
-            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
-        elif response_text:
-            # Text channel — send as plain friday_text message
-            print(f"[FridayWS] 💬 Sending text response on text channel")
-            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
 
     except Exception as exc:
         print(f"[FridayWS] ❌ _handle_friday_message error for {username!r}: {exc}")
@@ -1239,28 +1154,11 @@ async def _handle_friday_message(
 
 async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
     """
-    Synthesise `text` via TTS and push audio to the Friday WebSocket.
-    Used for posture corrections (6 s cooldown) and failure-motivation phrases.
-    No-op when USE_TTS=False.
+    Push posture correction / motivation text to the Friday WebSocket.
+    TTS removed — sends as friday_text. See docs/tts_integration_reference.md to restore audio.
     """
-    if not USE_TTS:
-        # TTS disabled -- push as text instead so the user still sees the message
-        try:
-            await ws.send_json({"type": "friday_text", "data": {"text": text}})
-        except Exception:
-            pass
-        return
     try:
-        user_voice_id = None
-        try:
-            user_voice_id = db.get_user_voice(username) or None
-        except Exception:
-            pass
-        await ws.send_json(speaking_indicator(True))
-        mp3 = await asyncio.to_thread(tts_speak, text, user_voice_id)
-        if mp3:
-            await ws.send_json(to_ws_envelope(mp3, text))
-        await ws.send_json(speaking_indicator(False))
+        await ws.send_json({"type": "friday_text", "data": {"text": text}})
     except Exception as exc:
         print(f"[FridayTTS] push error for {username!r}: {exc}")
 
@@ -1460,7 +1358,4 @@ def _kps_to_list(kps: np.ndarray) -> list:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Strip our custom --use_tts flag before handing argv to uvicorn
-    import sys as _sys
-    _sys.argv = [a for a in _sys.argv if not a.startswith("--use_tts")]
     uvicorn.run("endpoint:app", host="127.0.0.1", port=8000, reload=True)

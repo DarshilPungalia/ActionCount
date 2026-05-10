@@ -88,12 +88,7 @@
         if (msg.type === 'frontend_command') {
           _dispatchNavCommand(msg.data?.command || '');
         }
-        // Play TTS audio (only arrives on voice channel)
-        if (msg.type === 'friday_audio' && msg.data?.audio_b64) {
-          try {
-            new Audio('data:audio/mp3;base64,' + msg.data.audio_b64).play().catch(() => {});
-          } catch (_) {}
-        }
+        // friday_audio removed (TTS disabled — see docs/tts_integration_reference.md)
       } catch (_) {}
     };
 
