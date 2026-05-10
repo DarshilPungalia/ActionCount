@@ -127,14 +127,26 @@ from backend.utils.validation import (
 )
 from backend.agent.chatbot import _get_response
 from backend.agent.graph import invoke_friday
-from backend.agent.tts import (
-    speak as tts_speak,
-    to_ws_envelope,
-    speaking_indicator,
-    list_voices,
-    VOICES as TTS_VOICES,
-    _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
-)
+if USE_TTS:
+    from backend.agent.tts import (
+        speak as tts_speak,
+        to_ws_envelope,
+        speaking_indicator,
+        list_voices,
+        VOICES as TTS_VOICES,
+        _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
+    )
+else:
+    # TTS disabled via --use_tts=false — define no-op stubs so the rest of
+    # endpoint.py compiles and runs without importing tts.py at all.
+    # This prevents the Voxtral warmup subprocess from ever starting.
+    def tts_speak(text, voice_id=None):          return None       # noqa
+    def to_ws_envelope(audio_bytes, text=''):    return {}         # noqa
+    def speaking_indicator(active):              return {}         # noqa
+    def list_voices():                           return []         # noqa
+    def stop_speaking():                         pass              # noqa
+    TTS_VOICES:       dict = {}
+    TTS_DEFAULT_VOICE: str = ''
 from backend.agent.stt import FridaySTT
 
 # ── Security helpers ──────────────────────────────────────────────────────────

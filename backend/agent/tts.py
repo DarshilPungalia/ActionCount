@@ -363,4 +363,9 @@ def list_voices() -> list[dict]:
 
 
 # ── Auto-warmup at module import (background thread, non-blocking) ─────────────
-FridayTTS.instance().preload()
+# Skip warmup if VOXTRAL_WARMUP=false — avoids GPU load when TTS is enabled
+# but warmup is undesirable (e.g. constrained VRAM at startup).
+# Primary guard: tts.py is never imported at all when --use_tts=false.
+_WARMUP_ENABLED = os.getenv("VOXTRAL_WARMUP", "true").lower() not in ("false", "0", "no", "off")
+if _WARMUP_ENABLED:
+    FridayTTS.instance().preload()
