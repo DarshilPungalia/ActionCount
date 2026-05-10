@@ -1,481 +1,345 @@
 """
-stt.py
+tts.py
 ------
-Speech-to-Text daemon for the Friday AI assistant.
+Text-to-Speech module for the Friday AI assistant.
 
 Stack:
-  - sounddevice              : server microphone capture (native rate, float32)
-  - scipy.signal             : polyphase resampling 44 100 Hz → 16 000 Hz
-  - Silero VAD               : voice activity detection (speech onset / offset)
-  - CrispASR + Qwen3-ASR-1.7B Q4_K : transcription (subprocess, per-utterance)
+  - voxtral-mini-realtime-rs  : Rust inference binary (WGPU / CUDA)
+  - Voxtral-4B Q4_0 GGUF      : ~2.67 GB, 9 languages, 20 voice presets
+  - sounddevice               : chunked WAV playback with barge-in support
 
 Flow:
-  1. sounddevice InputStream reads float32 PCM at native 44 100 Hz
-  2. scipy.signal.resample_poly resamples each chunk to 16 000 Hz
-  3. Silero VAD scores each chunk → detects speech start / end
-  4. On speech START  → fire on_speech_start() + WebSocket listening indicator
-  5. On speech START while TTS active → call tts.stop_speaking() (barge-in)
-  6. On speech END    → write temp WAV, run CrispASR subprocess, fire callback(transcript)
-
-Callbacks supplied to start():
-  callback(transcript: str)   — final recognised phrase
-  on_speech_start()           — VAD detected speech onset
-  on_speech_end()             — VAD detected end of utterance
+  speak(text) → subprocess: voxtral speak --text ... --output tmp.wav
+              → read WAV bytes → return to caller
+  stop_speaking() → set stop event → kill subprocess + interrupt playback
 
 Config (.env):
-  CRISPASR_BINARY     — path to crispasr.exe (see friday_setup.ps1)
-  QWEN3_ASR_MODEL     — path to qwen3-asr-1.7b-q4_k.gguf
-  QWEN3_ASR_LANGUAGE  — transcription language (default: en)
+  VOXTRAL_BINARY      — path to voxtral.exe  (default: %USERPROFILE%\\voxtral-rs\\target\\release\\voxtral.exe)
+  VOXTRAL_MODEL       — path to voxtral-tts-q4.gguf  (default: models/voxtral/voxtral-tts-q4.gguf)
+  VOXTRAL_VOICE       — voice preset name  (default: casual_female)
+  VOXTRAL_EULER_STEPS — diffusion steps 3-8  (default: 4, RTF ~1.24×)
+
+Euler steps guide:
+  8  = max quality,  RTF ~1.61×  (above real-time, adds latency)
+  4  = recommended,  RTF ~1.24×  (voice assistant default)
+  3  = real-time,    RTF ~1.0×   (latency-critical)
+
+Exports used by endpoint.py:
+  speak(text, voice_id)           — alias for FridayTTS.instance().speak_sync()
+  to_ws_envelope(audio_bytes, _)  — wrap WAV bytes in tts_audio WS envelope
+  speaking_indicator(active)      — return friday_speaking WS dict
+  stop_speaking()                 — barge-in interrupt
+  list_voices()                   — list voice presets
+  VOICES                          — dict[name → preset_id]
+  _DEFAULT_VOICE_ID               — str
 """
 
 from __future__ import annotations
 
+import base64
+import os
+import subprocess
+import tempfile
 import threading
-from numpy import ndarray
-from typing import Callable, Optional
+from typing import Optional
 
-_TAG = "[FridaySTT]"
+_TAG = "[FridayTTS]"
 
-# ── Audio constants ───────────────────────────────────────────────────────────
-SAMPLE_RATE          = 16_000    # Target rate for Silero VAD and Whisper
-NATIVE_RATE          = 44_100    # Mic native rate (Windows WASAPI default)
-CHUNK_DURATION_MS    = 32        # Chunk size in ms (Silero recommendation)
-CHUNK_SAMPLES        = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)   # 512  @ 16 kHz
-NATIVE_CHUNK_SAMPLES = int(NATIVE_RATE * CHUNK_DURATION_MS / 1000)   # 1411 @ 44.1 kHz
-SILENCE_CHUNKS       = 15        # ~480 ms of silence → finalize (was 22 / ~700 ms)
-MIN_SPEECH_CHUNKS    = 3         # ignore bursts shorter than ~96 ms (noise gate) — was 5 (~160 ms)
-PRE_BUFFER_CHUNKS    = 5         # pre-buffer chunks always prepended at transcription time
-                                 # ensures the first word is never clipped even for short utterances
-SPEECH_THRESHOLD     = 0.5       # confidence required to enter speech state
-SILENCE_THRESHOLD    = 0.35      # confidence below which silence is confirmed (hysteresis)
+# ── Voxtral binary + model paths ───────────────────────────────────────────────
+# On Windows the binary is voxtral.exe; os.path.expandvars expands %USERPROFILE%
+_USERPROFILE = os.environ.get("USERPROFILE", os.path.expanduser("~"))
 
-# ── Fix 1: Barge-in thresholds (decoupled from VAD onset) ────────────────────
-# Barge-in requires sustained HIGH-confidence speech before killing TTS.
-# This prevents noise spikes at 0.5–0.75 confidence from aborting playback.
-BARGE_IN_THRESHOLD   = 0.80      # VAD confidence required to count toward barge-in
-BARGE_IN_CHUNKS      = 3         # consecutive chunks above threshold before firing (~96 ms)
-
-# ── Fix 2: Dynamic RMS gate ───────────────────────────────────────────────────
-# Instead of a hardcoded 0.01 floor, we track ambient noise during silence and
-# require speech to be RMS_SPEECH_MULTIPLIER × louder than that baseline.
-RMS_FLOOR            = 0.002     # absolute minimum — below this is a dead/disconnected mic
-RMS_SPEECH_MULTIPLIER = 3.0      # speech RMS must be this many times the ambient level
-RMS_EMA_ALPHA        = 0.05      # EMA weight for ambient noise update (slow, stable)
-RMS_AMBIENT_INIT     = 0.008     # conservative starting estimate
-
-# ── Junk / noise transcript filter ───────────────────────────────────────────
-# Catches short-clip noise artifacts that any ASR model (including Qwen3-ASR)
-# may produce on sub-word audio, as well as legacy Whisper hallucinations.
-_JUNK_TRANSCRIPTS: frozenset[str] = frozenset({
-    "you", "thank you", "thanks", "bye", "goodbye", "ok", "okay",
-    ".", "..", "...", "uh", "um", "hmm", "hm",
-    "the", "a", "and", "subtitles by", "transcribed by",
-    "www.", ".com", "amara.org", "like and subscribe",
-})
-
-# ── CrispASR / Qwen3-ASR constants (Windows paths) ───────────────────────────
-import os as _os
-CRISPASR_BINARY    = _os.path.expanduser(
-    _os.getenv("CRISPASR_BINARY",
-               _os.path.join(_os.environ.get("USERPROFILE", "~"),
-                             "crispasr", "build", "bin", "Release", "crispasr.exe"))
+VOXTRAL_BINARY: str = os.path.expandvars(
+    os.path.expanduser(
+        os.getenv(
+            "VOXTRAL_BINARY",
+            os.path.join(_USERPROFILE, "voxtral-rs", "target", "release", "voxtral.exe"),
+        )
+    )
 )
-QWEN3_ASR_MODEL    = _os.path.expanduser(
-    _os.getenv("QWEN3_ASR_MODEL",
-               _os.path.join("models", "qwen3-asr", "qwen3-asr-1.7b-q4_k.gguf"))
+
+VOXTRAL_MODEL: str = os.path.expandvars(
+    os.path.expanduser(
+        os.getenv(
+            "VOXTRAL_MODEL",
+            os.path.join("models", "voxtral", "voxtral-tts-q4.gguf"),
+        )
+    )
 )
-QWEN3_ASR_LANGUAGE = _os.getenv("QWEN3_ASR_LANGUAGE", "en")
+
+VOXTRAL_VOICE: str      = os.getenv("VOXTRAL_VOICE", "casual_female")
+VOXTRAL_EULER_STEPS: int = int(os.getenv("VOXTRAL_EULER_STEPS", "4"))
+
+# ── Voice registry (Voxtral preset names) ─────────────────────────────────────
+# Keys = human-friendly display names shown in the UI
+# Values = Voxtral --voice preset identifiers
+VOICES: dict[str, str] = {
+    # English
+    "Casual Female":       "casual_female",
+    "Casual Male":         "casual_male",
+    "Professional Female": "professional_female",
+    "Professional Male":   "professional_male",
+    "Narrative Female":    "narrative_female",
+    "Narrative Male":      "narrative_male",
+    # French
+    "FR Female":           "fr_female",
+    "FR Male":             "fr_male",
+    # German
+    "DE Female":           "de_female",
+    "DE Male":             "de_male",
+    # Spanish
+    "ES Female":           "es_female",
+    "ES Male":             "es_male",
+    # Italian
+    "IT Female":           "it_female",
+    "IT Male":             "it_male",
+    # Portuguese
+    "PT Female":           "pt_female",
+    "PT Male":             "pt_male",
+    # Dutch
+    "NL Female":           "nl_female",
+    "NL Male":             "nl_male",
+    # Hindi
+    "HI Female":           "hi_female",
+    "HI Male":             "hi_male",
+    # Arabic
+    "AR Female":           "ar_female",
+}
+
+_DEFAULT_VOICE_ID: str = os.getenv("VOXTRAL_VOICE", VOXTRAL_VOICE)
 
 
-class FridaySTT:
-    """Singleton Qwen3-ASR (via CrispASR) + Silero VAD continuous-recognition daemon."""
+# ═══════════════════════════════════════════════════════════════════════════════
+# FridayTTS — Singleton daemon
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    _instance: Optional["FridaySTT"] = None
+class FridayTTS:
+    """
+    Singleton TTS daemon wrapping Voxtral Q4_0 GGUF via voxtral-mini-realtime-rs.
 
-    def __init__(self):
-        self._stop_event         = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._callback: Optional[Callable[[str], None]] = None
-        self._on_speech_start: Optional[Callable[[], None]] = None
-        self._on_speech_end:   Optional[Callable[[], None]] = None
+    speak_sync(text, voice)  — synthesize WAV → return bytes (blocking, thread-safe)
+    stop_speaking()          — barge-in interrupt
+    preload()                — background warmup (fires at module import)
+    """
 
-        # Lazy-loaded models
-        self._vad_model     = None
-        self._vad_utils     = None
-        # No persistent ASR model — CrispASR is invoked as a subprocess per utterance
+    _instance: Optional["FridayTTS"] = None
 
-        # Fix 2: ambient RMS baseline, updated during silence periods
-        self._ambient_rms: float = RMS_AMBIENT_INIT
-
-        self._log_audio_device_info()
+    def __init__(self) -> None:
+        self._lock          = threading.Lock()
+        self._stop_event    = threading.Event()
+        self._speaking      = False
+        self._current_proc: Optional[subprocess.Popen] = None
 
     @classmethod
-    def instance(cls) -> "FridaySTT":
+    def instance(cls) -> "FridayTTS":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    # ── Public API ────────────────────────────────────────────────────────────
+    @property
+    def is_speaking(self) -> bool:
+        return self._speaking
 
-    def start(
+    # ── Public: synchronous speak → returns WAV bytes ─────────────────────────
+
+    def speak_sync(
         self,
-        callback: Callable[[str], None],
-        on_speech_start: Optional[Callable[[], None]] = None,
-        on_speech_end:   Optional[Callable[[], None]] = None,
-    ) -> None:
-        """Start the STT daemon thread. No-op if already running."""
-        if self._thread and self._thread.is_alive():
-            print(f"{_TAG} Daemon already running — ignoring duplicate start().")
-            return
+        text: str,
+        voice: str       = VOXTRAL_VOICE,
+        euler_steps: int = VOXTRAL_EULER_STEPS,
+    ) -> bytes | None:
+        """
+        Synthesise `text` via Voxtral and return raw WAV bytes.
+        Blocking — intended to be called from asyncio.to_thread().
+        Returns None on error or barge-in.
+        """
+        if not text or not text.strip():
+            return None
 
-        self._callback        = callback
-        self._on_speech_start = on_speech_start
-        self._on_speech_end   = on_speech_end
         self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run, daemon=True, name="FridaySTT-daemon"
-        )
-        self._thread.start()
-        print(f"{_TAG} Daemon started.")
-        print(f"{_TAG} Models : Silero VAD + Qwen3-ASR-1.7B Q4_K (CrispASR)")
-        print(f"{_TAG} STT    : {CRISPASR_BINARY}")
-        print(f"{_TAG} Model  : {QWEN3_ASR_MODEL}")
-        print(f"{_TAG} Mic    : SERVER default audio device (sounddevice WASAPI)")
-
-    def stop(self) -> None:
-        print(f"{_TAG} Stop requested.")
-        self._stop_event.set()
-
-    # ── Audio device diagnostics ─────────────────────────────────────────────
-
-    def _log_audio_device_info(self) -> None:
-        """Log audio device configuration for debugging."""
-        try:
-            import sounddevice as sd  # noqa: PLC0415
-            info = sd.query_devices(kind="input")
-            print(f"{_TAG} === Audio Device Info ===")
-            print(f"{_TAG} Device            : {info['name']}")
-            print(f"{_TAG} Native sample rate : {info['default_samplerate']} Hz")
-            print(f"{_TAG} Max input channels : {info['max_input_channels']}")
-            print(f"{_TAG} Resampling         : {NATIVE_RATE} Hz → {SAMPLE_RATE} Hz")
-            print(f"{_TAG} Native chunk       : {NATIVE_CHUNK_SAMPLES} samples (~{CHUNK_DURATION_MS} ms)")
-            print(f"{_TAG} Resampled chunk    : {CHUNK_SAMPLES} samples (~{CHUNK_DURATION_MS} ms)")
-            print(f"{_TAG} =========================")
-        except Exception as exc:
-            print(f"{_TAG} Could not query audio device: {exc}")
-
-    # ── Model loading ─────────────────────────────────────────────────────────
-
-    def _load_vad(self):
-        if self._vad_model is not None:
-            return
-        print(f"{_TAG} Loading Silero VAD …")
-        import torch  # noqa: PLC0415
-        torch.set_num_threads(1)
-        self._vad_model, self._vad_utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-        )
-        print(f"{_TAG} ✅ Silero VAD loaded.")
-
-    # _load_whisper removed — CrispASR binary is invoked per-utterance in _transcribe.
-
-    # ── Main loop ─────────────────────────────────────────────────────────────
-
-    def _run(self) -> None:
-        attempt = 0
-        while not self._stop_event.is_set():
-            attempt += 1
-            print(f"{_TAG} Recognition loop attempt #{attempt}")
-            try:
-                self._load_vad()
-                # Whisper removed — CrispASR binary is called per-utterance in _transcribe
-                self._recognition_loop()
-                if self._stop_event.is_set():
-                    break
-            except Exception as exc:
-                print(f"{_TAG} ❌ Error in recognition loop: {exc}")
-                wait = min(5.0, 2.0 + attempt * 0.5)
-                print(f"{_TAG} Retrying in {wait:.1f}s …")
-                self._stop_event.wait(timeout=wait)
-        print(f"{_TAG} Daemon exited cleanly.")
-
-    def _recognition_loop(self) -> None:
-        import numpy as np            # noqa: PLC0415
-        import torch                  # noqa: PLC0415
-        import sounddevice as sd      # noqa: PLC0415
-        import scipy.signal as sps    # noqa: PLC0415
-
-        (get_speech_timestamps, _, _, _, _) = self._vad_utils
-
-        speech_buffer:      list[np.ndarray] = []
-        _pre_buffer:        list[np.ndarray] = []   # VAD pre-buffer
-        silence_count:      int  = 0
-        is_speaking:        bool = False
-        speech_chunk_count: int  = 0
-
-        # Fix 1: barge-in state — tracked separately from VAD onset
-        _barge_in_count: int  = 0
-        _barge_in_fired: bool = False
-
-        # Open stream at native rate; we resample each chunk to 16 kHz ourselves
-        with sd.InputStream(
-            samplerate=NATIVE_RATE,
-            channels=1,
-            dtype="float32",
-            blocksize=NATIVE_CHUNK_SAMPLES,
-        ) as stream:
-            print(f"{_TAG} ✅ Audio stream opened: {NATIVE_RATE} Hz → {SAMPLE_RATE} Hz")
-
-            while not self._stop_event.is_set():
-                chunk_raw, overflowed = stream.read(NATIVE_CHUNK_SAMPLES)
-                if overflowed:
-                    print(f"{_TAG} ⚠️  Audio buffer overflow — CPU can't keep up")
-
-                chunk_raw = chunk_raw.flatten()   # (NATIVE_CHUNK_SAMPLES, 1) → (N,)
-
-                # Polyphase resample: 44100 → 16000 (ratio 160/441)
-                chunk = sps.resample_poly(
-                    chunk_raw,
-                    up=SAMPLE_RATE,
-                    down=NATIVE_RATE,
-                ).astype(np.float32)
-                # chunk is now exactly CHUNK_SAMPLES (512) at 16 kHz
-
-                chunk_tensor = torch.from_numpy(chunk)
-                confidence   = self._vad_model(chunk_tensor, SAMPLE_RATE).item()
-
-                if confidence > SPEECH_THRESHOLD:
-                    # ── Speech detected ───────────────────────────────────────
-
-                    # Fix 1: barge-in requires sustained high-confidence speech.
-                    # Accumulate a separate counter; only fire once per utterance.
-                    if confidence >= BARGE_IN_THRESHOLD:
-                        _barge_in_count += 1
-                        if _barge_in_count >= BARGE_IN_CHUNKS and not _barge_in_fired:
-                            _barge_in_fired = True
-                            self._fire_barge_in()
-                    else:
-                        # Confidence is in SPEECH_THRESHOLD..BARGE_IN_THRESHOLD —
-                        # valid speech but not strong enough to interrupt TTS.
-                        _barge_in_count = 0
-
-                    if not is_speaking:
-                        speech_chunk_count += 1
-                        _pre_buffer.append(chunk)  # accumulate into rolling pre-buffer
-                        if speech_chunk_count >= MIN_SPEECH_CHUNKS:
-                            is_speaking   = True
-                            silence_count = 0
-                            # _pre_buffer is kept (not cleared) so it can be prepended
-                            # at transcription time — this preserves the first word/syllable
-                            speech_buffer.extend(_pre_buffer)
-                            _pre_buffer = []
-                            print(f"{_TAG} 🎙️  Speech STARTED (VAD confidence={confidence:.2f})")
-                            self._fire_speech_start()
-                    else:
-                        speech_buffer.append(chunk)
-                    silence_count = 0
-
-                else:
-                    # ── Silence / ambiguous detected ──────────────────────────
-                    # Hysteresis band — ambiguous confidence while speaking → keep buffering
-                    if is_speaking and confidence >= SILENCE_THRESHOLD:
-                        speech_buffer.append(chunk)
-                        continue
-
-                    if not is_speaking:
-                        speech_chunk_count = max(0, speech_chunk_count - 1)
-                        # Keep a rolling pre-buffer of the most recent PRE_BUFFER_CHUNKS chunks.
-                        # These are prepended at transcription time so the first word is never lost.
-                        _pre_buffer = _pre_buffer[-(PRE_BUFFER_CHUNKS):]
-
-                        # Fix 2: calibrate ambient noise during confirmed silence
-                        chunk_rms = float(np.sqrt(np.mean(chunk ** 2)))
-                        self._ambient_rms = (
-                            (1.0 - RMS_EMA_ALPHA) * self._ambient_rms
-                            + RMS_EMA_ALPHA * chunk_rms
-                        )
-                        continue
-
-                    # Definitive silence while speaking (or after a short burst not yet confirmed)
-                    if is_speaking or speech_chunk_count > 0:
-                        speech_buffer.append(chunk)   # keep trailing silence for context
-                        silence_count += 1
-
-                    if silence_count >= SILENCE_CHUNKS:
-                        print(f"{_TAG} 🔇 Speech ENDED — transcribing …")
-                        self._fire_speech_end()
-
-                        # If is_speaking never flipped (very short word like "stop"),
-                        # the audio is entirely in _pre_buffer — use it directly.
-                        if not is_speaking and _pre_buffer and speech_chunk_count >= 1:
-                            audio_np = np.concatenate(_pre_buffer, axis=0)
-                        else:
-                            audio_np = np.concatenate(speech_buffer, axis=0)
-
-                        speech_buffer      = []
-                        _pre_buffer        = []
-                        silence_count      = 0
-                        is_speaking        = False
-                        speech_chunk_count = 0
-
-                        # Fix 1: reset barge-in state for next utterance
-                        _barge_in_count = 0
-                        _barge_in_fired = False
-
-                        self._transcribe(audio_np)
-
-        print(f"{_TAG} Audio stream closed.")
-
-    # ── Transcription ─────────────────────────────────────────────────────────
-
-    def _is_junk_transcript(self, text: str) -> bool:
-        """Return True if the transcript is too short or a known noise artifact."""
-        t = text.lower().strip().strip(".,!?\"'")
-        if len(t) < 3:
-            return True
-        if t in _JUNK_TRANSCRIPTS:
-            return True
-        if any(h in t for h in ("subtitle", "transcrib", "www.", ".com", "amara")):
-            return True
-        return False
-
-    def _transcribe(self, audio_np: "ndarray") -> None:
-        """
-        Write buffered audio to a temp WAV, pass to CrispASR Qwen3-ASR binary,
-        parse stdout for the transcript, fire callback.
-        Uses Windows-safe path handling (backslashes, %TEMP%, list-arg subprocess).
-        """
-        import tempfile     # noqa: PLC0415
-        import subprocess  # noqa: PLC0415
-        import soundfile as sf  # noqa: PLC0415
-        import numpy as np  # noqa: PLC0415
-        import re           # noqa: PLC0415
-        from pathlib import Path  # noqa: PLC0415
+        self._speaking = True
+        tmp_wav = None
 
         try:
-            duration_s = len(audio_np) / SAMPLE_RATE
-            if duration_s < 0.15:
-                print(f"{_TAG} Skipping short clip ({duration_s:.2f}s < 0.15s)")
-                return
+            tmp_wav = tempfile.mktemp(suffix=".wav", prefix="friday_tts_")
 
-            # Dynamic RMS gate — skip near-silent clips regardless of VAD result
-            rms = float(np.sqrt(np.mean(audio_np ** 2)))
-            dynamic_threshold = max(RMS_FLOOR, self._ambient_rms * RMS_SPEECH_MULTIPLIER)
-            if rms < dynamic_threshold:
-                print(
-                    f"{_TAG} Skipping low-energy clip "
-                    f"(RMS={rms:.4f} < threshold={dynamic_threshold:.4f}, "
-                    f"ambient={self._ambient_rms:.4f})"
-                )
-                return
-
-            # ── 1. Write buffered audio to temp WAV ──────────────────────────
-            # Use Path() to normalise backslashes on Windows; mktemp gives us
-            # a path string — CrispASR needs to write to it, so we cannot use
-            # mkstemp (which returns an open fd). Always clean up in finally.
-            tmp_wav = str(Path(tempfile.mktemp(suffix=".wav", prefix="friday_stt_")))
-            try:
-                sf.write(tmp_wav, audio_np, SAMPLE_RATE)
-            except Exception as exc:
-                print(f"{_TAG} ❌ Failed to write temp WAV: {exc}")
-                return
-
-            # ── 2. Run CrispASR ──────────────────────────────────────────────
-            # Pass args as a list (never shell=True) — handles spaces in Windows
-            # paths correctly without manual quoting.
             cmd = [
-                CRISPASR_BINARY,
-                "--backend", "qwen3",
-                "-m",        QWEN3_ASR_MODEL,
-                "-f",        tmp_wav,
-                "-l",        QWEN3_ASR_LANGUAGE,
-                "--no-timestamps",
+                VOXTRAL_BINARY,
+                "speak",
+                "--text",        text,
+                "--voice",       voice,
+                "--gguf",        VOXTRAL_MODEL,
+                "--euler-steps", str(euler_steps),
+                "--output",      tmp_wav,
             ]
 
-            try:
-                result = subprocess.run(
+            preview = text[:60] + ("…" if len(text) > 60 else "")
+            print(f"{_TAG} Synthesising [{voice}] ({euler_steps} steps): \"{preview}\"")
+
+            # Launch Voxtral subprocess
+            with self._lock:
+                self._current_proc = subprocess.Popen(
                     cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                 )
-            except subprocess.TimeoutExpired:
-                print(f"{_TAG} ❌ CrispASR timed out after 30s")
-                return
-            except FileNotFoundError:
-                print(f"{_TAG} ❌ CrispASR binary not found: {CRISPASR_BINARY}")
-                return
-            finally:
-                # Always remove the temp WAV — do not leak files in %TEMP%
+
+            _, stderr = self._current_proc.communicate()
+            retcode   = self._current_proc.returncode
+
+            with self._lock:
+                self._current_proc = None
+
+            if self._stop_event.is_set():
+                print(f"{_TAG} Synthesis interrupted (barge-in).")
+                return None
+
+            if retcode != 0:
+                err = stderr.decode(errors="replace")[:500] if stderr else ""
+                print(f"{_TAG} ❌ Voxtral error (exit {retcode}): {err}")
+                return None
+
+            if not os.path.exists(tmp_wav):
+                print(f"{_TAG} ❌ Output WAV not found at: {tmp_wav}")
+                return None
+
+            with open(tmp_wav, "rb") as f:
+                wav_bytes = f.read()
+
+            print(f"{_TAG} ✅ Synthesis complete — {len(wav_bytes):,} bytes")
+            return wav_bytes
+
+        except FileNotFoundError:
+            print(
+                f"{_TAG} ❌ Voxtral binary not found: {VOXTRAL_BINARY}\n"
+                f"{_TAG}    Set VOXTRAL_BINARY in .env to the correct path."
+            )
+            return None
+        except Exception as exc:
+            print(f"{_TAG} ❌ TTS error: {exc}")
+            return None
+        finally:
+            self._speaking = False
+            if tmp_wav and os.path.exists(tmp_wav):
                 try:
-                    import os  # noqa: PLC0415
                     os.remove(tmp_wav)
                 except OSError:
                     pass
 
-            if result.returncode != 0:
-                print(f"{_TAG} ❌ CrispASR error (code {result.returncode}):")
-                print(result.stderr[:500])
-                return
+    # ── Public: barge-in interrupt ────────────────────────────────────────────
 
-            # ── 3. Parse transcript from stdout ─────────────────────────────
-            # Strip ANSI escape codes and progress lines (lines starting with '[')
-            ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-            lines = result.stdout.strip().splitlines()
-            text_lines = [
-                ansi_escape.sub('', line).strip()
-                for line in lines
-                if line.strip() and not line.strip().startswith('[')
-            ]
-            text = " ".join(text_lines).strip()
+    def stop_speaking(self) -> None:
+        """Stop any ongoing synthesis and clear speaking state."""
+        self._stop_event.set()
+        self._speaking = False
 
-            if not text:
-                print(f"{_TAG} Empty transcript (silence / noise).")
-                return
-
-            if self._is_junk_transcript(text):
-                print(f"{_TAG} 🚫 Junk transcript filtered: \"{text}\"")
-                return
-
-            word_count = len(text.split())
-            print(f"{_TAG} Transcript ({word_count} words, {duration_s:.1f}s): \"{text}\"")
-
-            if self._callback:
+        with self._lock:
+            proc = self._current_proc
+        if proc and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2.0)
+            except Exception:
                 try:
-                    self._callback(text)
-                except Exception as exc:
-                    print(f"{_TAG} Transcript callback error: {exc}")
+                    proc.kill()
+                except Exception:
+                    pass
 
-        except Exception as exc:
-            print(f"{_TAG} Transcription error: {exc}")
+    # ── Warmup ────────────────────────────────────────────────────────────────
 
-    # ── Callbacks ─────────────────────────────────────────────────────────────
+    def preload(self) -> None:
+        """Spawn a background warmup synthesis to prime Voxtral's autotune cache."""
+        threading.Thread(
+            target=self._warmup, daemon=True, name="FridayTTS-warmup"
+        ).start()
 
-    def _fire_barge_in(self) -> None:
-        """Stop TTS immediately — only called after BARGE_IN_CHUNKS consecutive
-        high-confidence (≥ BARGE_IN_THRESHOLD) VAD detections. This prevents
-        noise spikes and low-confidence VAD hits from aborting TTS playback."""
-        print(f"{_TAG} ⏹️  Barge-in confirmed — stopping TTS.")
+    def _warmup(self) -> None:
+        print(f"{_TAG} 🔥 Warming up Voxtral binary …")
+        tmp = tempfile.mktemp(suffix=".wav", prefix="friday_tts_warmup_")
         try:
-            from backend.agent.tts import stop_speaking  # noqa: PLC0415  (tts.py = FridayTTS shim)
-            stop_speaking()
-        except Exception:
-            pass
-
-    def _fire_speech_start(self) -> None:
-        """Fire the on_speech_start callback. Barge-in is handled separately
-        by _fire_barge_in() and may have already fired before this point."""
-        if self._on_speech_start:
+            subprocess.run(
+                [
+                    VOXTRAL_BINARY, "speak",
+                    "--text",        "Hello.",
+                    "--voice",       VOXTRAL_VOICE,
+                    "--gguf",        VOXTRAL_MODEL,
+                    "--euler-steps", "3",
+                    "--output",      tmp,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+            print(f"{_TAG} ✅ Voxtral warmup complete.")
+        except FileNotFoundError:
+            print(f"{_TAG} ⚠️  Voxtral binary not found — warmup skipped (non-fatal).")
+        except Exception as exc:
+            print(f"{_TAG} ⚠️  Warmup failed (non-fatal): {exc}")
+        finally:
             try:
-                self._on_speech_start()
-            except Exception as exc:
-                print(f"{_TAG} on_speech_start callback error: {exc}")
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
 
-    def _fire_speech_end(self) -> None:
-        if self._on_speech_end:
-            try:
-                self._on_speech_end()
-            except Exception as exc:
-                print(f"{_TAG} on_speech_end callback error: {exc}")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Module-level convenience functions — these are what endpoint.py imports
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def speak(text: str, voice_id: Optional[str] = None) -> bytes | None:
+    """
+    Synchronous TTS synthesis via Voxtral.
+    Returns raw WAV bytes or None on failure.
+    Called from endpoint.py via asyncio.to_thread(tts_speak, text, voice_id).
+
+    voice_id here is a Voxtral preset name string (e.g. "casual_female").
+    Falls back to VOXTRAL_VOICE env var if None.
+    """
+    voice = voice_id or _DEFAULT_VOICE_ID
+    # Validate: only accept known preset values to guard against injection
+    known_presets = set(VOICES.values())
+    if voice not in known_presets:
+        print(f"{_TAG} ⚠️  Unknown voice preset {voice!r} — falling back to {_DEFAULT_VOICE_ID!r}")
+        voice = _DEFAULT_VOICE_ID
+    return FridayTTS.instance().speak_sync(text, voice=voice)
+
+
+def stop_speaking() -> None:
+    """Interrupt current TTS playback. Called by STT on barge-in."""
+    FridayTTS.instance().stop_speaking()
+
+
+def to_ws_envelope(audio_bytes: bytes, _text: str = "") -> dict:
+    """
+    Wrap raw WAV bytes in a JSON-serialisable WebSocket message.
+    Signature: to_ws_envelope(mp3, response_text) — second arg unused,
+    kept for call-site compatibility with endpoint.py.
+    """
+    return {
+        "type": "tts_audio",
+        "data": {
+            "audio": base64.b64encode(audio_bytes).decode("utf-8"),
+            "mime":  "audio/wav",
+        },
+    }
+
+
+def speaking_indicator(active: bool) -> dict:
+    """
+    Return a friday_speaking WebSocket message dict.
+    Called as: await ws.send_json(speaking_indicator(True/False))
+    """
+    return {
+        "type": "friday_speaking",
+        "data": {"active": active},
+    }
+
+
+def list_voices() -> list[dict]:
+    """Return available Voxtral voice presets as [{name, voice_id}, ...]."""
+    return [{"name": k, "voice_id": v} for k, v in VOICES.items()]
+
+
+# ── Auto-warmup at module import (background, non-blocking) ───────────────────
+FridayTTS.instance().preload()
