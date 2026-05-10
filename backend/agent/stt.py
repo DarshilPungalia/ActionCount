@@ -403,6 +403,8 @@ class FridaySTT:
                     cmd,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",  # never crash on ANSI/non-UTF8 bytes
                     timeout=30,
                 )
             except subprocess.TimeoutExpired:
@@ -427,7 +429,8 @@ class FridaySTT:
             # ── 3. Parse transcript from stdout ─────────────────────────────
             # Strip ANSI escape codes and progress lines (lines starting with '[')
             ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-            lines = result.stdout.strip().splitlines()
+            raw_stdout = result.stdout or ""  # guard: stdout is None on some errors
+            lines = raw_stdout.strip().splitlines()
             text_lines = [
                 ansi_escape.sub('', line).strip()
                 for line in lines
