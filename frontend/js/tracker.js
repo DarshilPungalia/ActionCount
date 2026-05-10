@@ -33,6 +33,9 @@ const BASE_MET = {
 let _repTimestamps = [];
 let _lastRepCount  = 0;
 
+// Auto-save guard — prevents double-fire when target is hit
+let _autoSaveFired = false;
+
 // Fetch user body weight from profile (cached)
 let _bodyWeightKg = null;
 async function getBodyWeight() {
@@ -60,6 +63,28 @@ const repObserver = new MutationObserver(() => {
     _lastRepCount = reps;
   }
   updateSaveBtn(reps);
+
+  // ── Auto-save when plan target reps reached ────────────────────────────────
+  // Only fires when PlanLoader is active AND the live rep count has just hit
+  // (or exceeded) the target for the current set — saves immediately, starts
+  // the rest timer, and auto-advances to the next set after rest.
+  if (
+    !_autoSaveFired
+    && reps > 0
+    && window.PlanLoader
+    && PlanLoader.isActive()
+    && !PlanLoader.isSaved()
+  ) {
+    const item = PlanLoader.getCurrentItem();
+    if (item && item.targetReps > 0 && reps >= item.targetReps) {
+      _autoSaveFired = true;   // block re-entry until next set resets this
+      console.log(
+        `[PlanLoader] Target reached: ${reps}/${item.targetReps} reps — auto-saving set`
+      );
+      // Small delay so the rep animation completes before UI updates
+      setTimeout(() => saveSet(), 350);
+    }
+  }
 });
 if (repCountEl) repObserver.observe(repCountEl, { childList: true, subtree: true, characterData: true });
 
@@ -184,9 +209,10 @@ async function saveSet(repsOverride = null, silent = false) {
       calories > 0 ? calories : null,
     );
 
-    // Reset rep timestamps
+    // Reset rep timestamps AND the auto-save guard for the next set
     _repTimestamps = [];
     _lastRepCount  = 0;
+    _autoSaveFired = false;
 
     // Persist last used weight for this exercise (auto-fill next time)
     saveAutoFill(slug, weight);
