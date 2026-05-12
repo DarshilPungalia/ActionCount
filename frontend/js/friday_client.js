@@ -1,68 +1,25 @@
 /**
  * friday_client.js
  * ----------------
- * Lightweight shared Friday WebSocket client for non-tracker pages.
+ * Shared Friday WebSocket client for Dashboard App pages
+ * (dashboard, plans, chatbot, metrics, welcome).
  *
- * Handles:
- *   - WS connection + auto-reconnect to /ws/friday
- *   - Site navigation frontend_commands (navigate_*)
- *   - Page-transition audio playback (voice channel only)
- *   - No waveform HUD — that stays on tracker/calorie pages
+ * This version is TEXT-MODE ONLY — voice navigation is not supported
+ * in the Dashboard App. The WS connection is used solely to receive
+ * friday_text agent responses (e.g. chatbot assistant messages).
+ *
+ * Navigation commands are intentionally stripped: the Dashboard App
+ * uses REST API for chat and does not process frontend_command messages.
  *
  * Usage (add before </body>):
  *   <script src="/static/js/api.js"></script>
- *   <script src="/static/js/friday_client.js" data-channel="voice"></script>
- *
- * For chatbot page use data-channel="text".
- * Optionally set window.dispatchFridayCommand = function(cmd){...} before
- * this script loads to handle page-specific commands.
+ *   <script src="/static/js/friday_client.js"></script>
  */
 (function () {
   'use strict';
 
-  // Determine channel from the <script> tag's data-channel attribute (default: voice)
-  const _scriptEl = document.currentScript;
-  const _channel  = (_scriptEl && _scriptEl.getAttribute('data-channel')) || 'voice';
-
-  // ── Navigation command dispatcher ────────────────────────────────────────────
-  function _dispatchNavCommand(cmd) {
-    console.log('[FridayClient] frontend_command:', cmd);
-    switch (cmd) {
-
-      // ── Site navigation ────────────────────────────────────────────────────
-      case 'navigate_tracker':
-        window.location.href = '/';
-        break;
-      case 'navigate_dashboard':
-        window.location.href = '/dashboard';
-        break;
-      case 'navigate_chatbot':
-        window.location.href = '/chatbot';
-        break;
-      case 'navigate_plans':
-        window.location.href = '/plans';
-        break;
-      case 'navigate_metrics':
-        window.location.href = '/metrics';
-        break;
-      case 'navigate_calorie':
-      case 'open_calorie':
-      case 'calorie_snapshot':
-        window.location.href = '/calorie';
-        break;
-      case 'navigate_back':
-        history.back();
-        break;
-
-      default:
-        // Delegate to a page-specific handler if one has been registered
-        if (typeof window.dispatchFridayCommand === 'function') {
-          window.dispatchFridayCommand(cmd);
-        } else {
-          console.log('[FridayClient] unhandled command:', cmd);
-        }
-    }
-  }
+  // Always text mode — Dashboard App does not use voice navigation
+  const _channel = 'text';
 
   // ── WebSocket ────────────────────────────────────────────────────────────────
   let _ws   = null;
@@ -79,16 +36,18 @@
     _ws.onopen = function () {
       _open = true;
       _ws.send(JSON.stringify({ type: 'set_channel', data: { channel: _channel } }));
-      console.log(`[FridayClient] connected — channel: ${_channel}`);
+      console.log('[FridayClient] connected — channel: text (Dashboard App, navigation commands disabled)');
     };
 
     _ws.onmessage = function (evt) {
       try {
         const msg = JSON.parse(evt.data);
-        if (msg.type === 'frontend_command') {
-          _dispatchNavCommand(msg.data?.command || '');
+        // NOTE: frontend_command / navigation dispatch intentionally removed.
+        // The Dashboard App does not handle voice navigation commands.
+        // Only log text responses for debugging purposes.
+        if (msg.type === 'friday_text') {
+          console.log('[FridayClient] friday_text:', msg.data?.text);
         }
-        // friday_audio removed (TTS disabled — see docs/tts_integration_reference.md)
       } catch (_) {}
     };
 
@@ -100,19 +59,11 @@
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────
-  function _setChannel(channel) {
-    if (_ws && _ws.readyState === WebSocket.OPEN) {
-      _ws.send(JSON.stringify({ type: 'set_channel', data: { channel } }));
-    }
-  }
-
   window.addEventListener('load', _openWS);
 
   window.FridayClient = {
-    /** Switch the active channel ('voice' | 'text') on the fly. */
-    setChannel: _setChannel,
     /** Returns true if the WebSocket is currently open. */
-    isOpen:     () => _open,
+    isOpen: () => _open,
   };
 
 })();

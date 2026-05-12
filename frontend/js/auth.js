@@ -1,11 +1,22 @@
 /**
  * auth.js
  * Login, Signup, and Onboarding logic for ActionCount.
+ *
+ * Both apps share this file. The behaviour adapts based on the URL query param:
+ *   /login?app=tracker    → Tracker App  (indefinite JWT, redirects to /)
+ *   /login?app=dashboard  → Dashboard App (7-day JWT, redirects to /welcome)
+ *   /login               → defaults to tracker
  */
+
+// ── Detect which app we're serving ───────────────────────────────────────────────
+// Read ?app= URL param. Everything falls back to 'tracker' for backwards compatibility.
+const _APP_TYPE      = new URLSearchParams(location.search).get('app') || 'tracker';
+const _IS_TRACKER    = _APP_TYPE !== 'dashboard';
+const _POST_LOGIN_URL = _IS_TRACKER ? '/' : '/welcome';
 
 // ── Redirect if already logged in ─────────────────────────────────────────────
 if (Auth.isLoggedIn()) {
-  window.location.href = "/welcome";
+  window.location.href = _POST_LOGIN_URL;
 }
 
 // ── Card flip ─────────────────────────────────────────────────────────────────
@@ -92,11 +103,11 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
   btn.textContent = "Signing in…";
 
   try {
-    const data = await Auth.login(email, pass);
+    const data = await Auth.login(email, pass, _APP_TYPE);
     if (data.is_new_user) {
       showOnboarding();
     } else {
-      window.location.href = "/welcome";
+      window.location.href = _POST_LOGIN_URL;
     }
   } catch (err) {
     showError("loginError", err.message);
@@ -144,7 +155,7 @@ document.getElementById("signupForm").addEventListener("submit", async (e) => {
   btn.textContent = "Creating account…";
 
   try {
-    await Auth.signup(user, pass, email);
+    await Auth.signup(user, pass, email, _APP_TYPE);
     // New users always go to onboarding
     sessionStorage.setItem('ac_is_new_user', '1');   // welcome.html reads this
     showOnboarding();
@@ -292,6 +303,7 @@ async function submitProfile() {
     await Profile.save(payload);
     // Advance to step 4 — first plan creation
     goToStep(4);
+    _adaptStep4ForApp();  // hides Plans/Chatbot buttons for Tracker App
   } catch (err) {
     alert("Could not save profile: " + err.message);
     btn.disabled = false;
@@ -299,7 +311,25 @@ async function submitProfile() {
   }
 }
 
-// ── Step 4 navigation helpers ─────────────────────────────────────────────────
+// ── Step 4 navigation helpers ──────────────────────────────────────────────
+// For the Tracker App, only the "Skip" option is shown (plans & chatbot live in
+// the Dashboard App).  We adapt Step 4 after the profile is saved.
+function _adaptStep4ForApp() {
+  if (!_IS_TRACKER) return;   // Dashboard App — show all options as usual
+
+  // Hide the two-column grid (Manual + AI buttons)
+  const grid = document.querySelector('#obStep4 .grid');
+  if (grid) grid.style.display = 'none';
+
+  // Update the description
+  const desc = document.querySelector('#obStep4 p');
+  if (desc) desc.textContent = 'Your profile is saved. Head straight to the Tracker and start your first workout!';
+
+  // Update skip button label
+  const skipBtn = document.querySelector('#obStep4 button[onclick="skipPlanCreation()"]');
+  if (skipBtn) skipBtn.textContent = '🚀 Go to Tracker';
+}
+
 function goToPlansManual() {
   // Mark welcome seen so plans page doesn't redirect back
   sessionStorage.setItem("seen_welcome", "1");
@@ -315,6 +345,5 @@ function goToChatForPlan() {
 
 function skipPlanCreation() {
   sessionStorage.setItem("seen_welcome", "1");
-  window.location.href = "/welcome";
+  window.location.href = _POST_LOGIN_URL;
 }
-

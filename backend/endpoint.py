@@ -89,6 +89,12 @@ ALGORITHM                 = os.getenv("ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINS  = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10080"))
 GOOGLE_API_KEY            = os.getenv("GOOGLE_API_KEY", "")
 
+# ── Per-app JWT lifetimes ─────────────────────────────────────────────────────
+# Tracker app  → effectively indefinite (10 years)
+TRACKER_TOKEN_EXPIRE_MINS   = 10 * 365 * 24 * 60  # 5_256_000 minutes
+# Dashboard app → 7-day session
+DASHBOARD_TOKEN_EXPIRE_MINS = 7 * 24 * 60         # 10_080 minutes
+
 # ── Path setup ────────────────────────────────────────────────────────────────
 BACKEND_DIR  = Path(__file__).parent.resolve()
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
@@ -545,7 +551,13 @@ async def signup(body: SignupRequest):
     hashed = _hash_password(body.password)
     db.create_user(body.username, hashed, body.email)
 
-    token = _create_access_token({"sub": body.username})
+    # Choose lifetime based on which app is signing up
+    expire_mins = (
+        TRACKER_TOKEN_EXPIRE_MINS
+        if (body.app_type or "tracker").lower() == "tracker"
+        else DASHBOARD_TOKEN_EXPIRE_MINS
+    )
+    token = _create_access_token({"sub": body.username}, timedelta(minutes=expire_mins))
     return TokenResponse(access_token=token, token_type="bearer", is_new_user=True)
 
 
@@ -564,7 +576,13 @@ async def login(body: LoginRequest):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password.",
         )
-    token = _create_access_token({"sub": username})
+    # Choose lifetime based on which app is logging in
+    expire_mins = (
+        TRACKER_TOKEN_EXPIRE_MINS
+        if (body.app_type or "tracker").lower() == "tracker"
+        else DASHBOARD_TOKEN_EXPIRE_MINS
+    )
+    token = _create_access_token({"sub": username}, timedelta(minutes=expire_mins))
     is_new = not user.get("onboarding_complete", False)
     return TokenResponse(access_token=token, token_type="bearer", is_new_user=is_new)
 

@@ -36,10 +36,6 @@
       </div>
 
       <div class="nav-right">
-        <a href="/dashboard" class="nav-pill">Dashboard</a>
-        <a href="/chatbot"   class="nav-pill">AI Coach</a>
-        <a href="/plans"     class="nav-pill">Plans</a>
-        <a href="/metrics"   class="nav-pill">Metrics</a>
         <a href="/calorie"   class="nav-pill" id="nav-calorie-btn" style="background:rgba(99,102,241,0.14);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;">🍎 Calorie Scan</a>
         <span id="nav-username" class="nav-user"></span>
         <button onclick="Auth.logout()" class="nav-logout">Logout</button>
@@ -334,11 +330,7 @@
   <script>
     (async function authGuard() {
       if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
-      // First visit this session — show the welcome page
-      if (!sessionStorage.getItem('seen_welcome')) {
-        window.location.href = '/welcome';
-        return;
-      }
+      // Tracker App — skip /welcome entirely, land directly on the tracker.
       try {
         const profile = await apiFetch('/api/user/profile');
         document.getElementById('nav-username').textContent = Auth.username();

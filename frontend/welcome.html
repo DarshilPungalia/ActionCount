@@ -406,18 +406,8 @@
   })();
   </script>
 
-  <script>
-  // Friday WebSocket in TEXT mode — voice activates only on the tracker
-  (function openFridayText() {
-    const token = localStorage.getItem('access_token') || localStorage.getItem('ac_token');
-    if (!token) return;
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws/friday?token=${encodeURIComponent(token)}`);
-    ws.onopen  = () => ws.send(JSON.stringify({ type: 'set_channel', data: { channel: 'text' } }));
-    ws.onclose = () => setTimeout(openFridayText, 3000);
-    ws.onerror = () => ws.close();
-  })();
-  </script>
+  <!-- Friday client — text mode only (Dashboard App, no voice navigation) -->
+  <script src="/static/js/friday_client.js" data-channel="text"></script>
 
 <script src="/static/js/page_transitions.js"></script>
 </body>

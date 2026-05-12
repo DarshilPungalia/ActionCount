@@ -15,11 +15,15 @@ class SignupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
     password: str = Field(..., min_length=12, description="Minimum 12 chars, must include upper, digit and symbol")
     email: str = Field(..., description="Required — used as the unique account identifier")
+    # 'tracker' → indefinite JWT (10 yr); 'dashboard' → 7-day JWT
+    app_type: Optional[str] = Field(default="tracker", description="Which sub-app is signing up")
 
 
 class LoginRequest(BaseModel):
     email:    str
     password: str
+    # 'tracker' → indefinite JWT (10 yr); 'dashboard' → 7-day JWT
+    app_type: Optional[str] = Field(default="tracker", description="Which sub-app is logging in")
 
 
 class TokenResponse(BaseModel):

@@ -142,6 +142,20 @@
     .pw-rules-tooltip ul { padding-left: 14px; margin-top: 6px; }
     .pw-rules-tooltip li { margin-bottom: 3px; }
   </style>
+  <script>
+    // Adapt page title/tagline to the app context before any render
+    (function () {
+      const app = new URLSearchParams(location.search).get('app') || 'tracker';
+      if (app === 'dashboard') {
+        document.title = 'ActionCount — Dashboard Sign In';
+        document.addEventListener('DOMContentLoaded', function () {
+          const tag = document.querySelector('p.text-slate-400.text-sm');
+          if (tag) tag.textContent = 'Sign in to your Dashboard & Plans';
+        });
+      }
+      // Store app type on the page so auth.js can read it via URL param
+    })();
+  </script>
 </head>
 <body class="bg-animated min-h-screen flex items-center justify-center p-4">
 

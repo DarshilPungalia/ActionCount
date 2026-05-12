@@ -6,7 +6,11 @@ const API_BASE = window.location.origin;
 
 function getToken()    { return localStorage.getItem("ac_token"); }
 function setToken(t)   { localStorage.setItem("ac_token", t); }
-function clearToken()  { localStorage.removeItem("ac_token"); localStorage.removeItem("ac_username"); }
+function clearToken()  {
+  localStorage.removeItem("ac_token");
+  localStorage.removeItem("ac_username");
+  localStorage.removeItem("ac_app_type");
+}
 function authHeaders(extra = {}) {
   const token = getToken();
   return token
@@ -38,26 +42,32 @@ async function apiFetch(path, options = {}, timeoutMs = 30000) {
 }
 
 const Auth = {
-  async signup(username, password, email = "") {
+  async signup(username, password, email = "", app_type = "tracker") {
     const data = await apiFetch("/api/auth/signup", {
-      method: "POST", body: JSON.stringify({ username, password, email }),
+      method: "POST", body: JSON.stringify({ username, password, email, app_type }),
     });
     setToken(data.access_token);
     localStorage.setItem("ac_username", username);
+    localStorage.setItem("ac_app_type", app_type);  // persist for logout redirect
     return data;
   },
-  async login(email, password) {
+  async login(email, password, app_type = "tracker") {
     const data = await apiFetch("/api/auth/login", {
-      method: "POST", body: JSON.stringify({ email, password }),
+      method: "POST", body: JSON.stringify({ email, password, app_type }),
     });
     setToken(data.access_token);
     try {
       const payload = JSON.parse(atob(data.access_token.split(".")[1]));
       localStorage.setItem("ac_username", payload.sub || email);
     } catch (_) { localStorage.setItem("ac_username", email); }
+    localStorage.setItem("ac_app_type", app_type);  // persist for logout redirect
     return data;
   },
-  logout()    { clearToken(); window.location.href = "/login"; },
+  logout() {
+    const appType = localStorage.getItem("ac_app_type") || "tracker";
+    clearToken();
+    window.location.href = `/login?app=${appType}`;
+  },
   isLoggedIn(){ return !!getToken(); },
   username()  { return localStorage.getItem("ac_username") || ""; },
 };
