@@ -708,21 +708,24 @@ def get_latest_memory_summary(username: str) -> Optional[dict]:
 _WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def save_workout_plan(username: str, weekday: str, exercises: list[dict]) -> dict:
+def save_workout_plan(username: str, weekday: str, exercises: list[dict],
+                      workout_time: Optional[str] = None) -> dict:
     """
     Upsert the recurring workout plan for a given weekday.
     `exercises` is an ordered list of {exercise_key, sets, reps, weight_kg}.
+    `workout_time` is an optional "HH:MM" string for automatic Standby Mode trigger.
     The plan repeats every week on this weekday until explicitly deleted.
     """
     if weekday not in _WEEKDAYS:
         raise ValueError(f"Invalid weekday '{weekday}'. Must be one of {_WEEKDAYS}.")
     now = datetime.utcnow().isoformat()
     doc = {
-        "username":   username,
-        "weekday":    weekday,
-        "exercises":  exercises,
-        "updated_at": now,
-        "is_active":  True,
+        "username":     username,
+        "weekday":      weekday,
+        "exercises":    exercises,
+        "workout_time": workout_time,   # HH:MM or None
+        "updated_at":   now,
+        "is_active":    True,
     }
     existing = _workout_plans().find_one({"username": username, "weekday": weekday})
     if existing:

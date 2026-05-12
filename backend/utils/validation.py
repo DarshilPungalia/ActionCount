@@ -225,11 +225,16 @@ class PlanExercise(BaseModel):
 class SaveWorkoutPlanRequest(BaseModel):
     weekday: str     = Field(..., pattern="^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$")
     exercises: list[PlanExercise] = Field(..., min_length=1)
+    workout_time: Optional[str] = Field(
+        default=None,
+        description="Optional HH:MM time to auto-start the workout (e.g. '18:30')",
+    )
 
 
 class WorkoutPlanResponse(BaseModel):
     weekday: str
     exercises: list[PlanExercise]
+    workout_time: Optional[str] = None   # HH:MM or None
     updated_at: str
     is_active: bool
 

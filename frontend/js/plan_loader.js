@@ -103,6 +103,10 @@ const PlanLoader = (() => {
 
   // ── Auto-start camera ────────────────────────────────────────────────────────
   function _autoStart() {
+    // Don't auto-start while StandbyMode is managing the initial state.
+    // StandbyMode will call PlanLoader.autoStart() explicitly after transition.
+    if (window.StandbyMode && !StandbyMode.isWorkoutMode()) return;
+
     // 800ms: gives live.js time to wire up the exercise-change handler
     // after _applyCurrentItem() dispatches the 'change' event on the select
     setTimeout(() => {
@@ -639,6 +643,6 @@ const PlanLoader = (() => {
 
   function isActive() { return _active; }
 
-  return { init, onSetSaved, markSaved, isSaved, getCurrentItem, isActive };
+  return { init, onSetSaved, markSaved, isSaved, getCurrentItem, isActive, autoStart: _autoStart };
 
 })();
