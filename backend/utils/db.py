@@ -797,3 +797,68 @@ def suggest_replacement_exercises(exercise_key: str, limit: int = 4) -> list[dic
     ]
     return candidates[:limit]
 
+
+# ── To-Do List ────────────────────────────────────────────────────────────────
+# Schema per document:
+#   {
+#     "todo_id":   str  (UUID),
+#     "username":  str,
+#     "date":      str  (ISO YYYY-MM-DD),
+#     "time":      str | None  ("HH:MM" for hour-wise, None for all-day),
+#     "task":      str,
+#     "completed": bool,
+#     "created_at": str,
+#   }
+
+def _todos():
+    return _get_db()["todos"]
+
+
+def save_todo(username: str, todo_date: str, task: str,
+              todo_time: Optional[str] = None) -> dict:
+    """Create a new to-do item. Returns the stored document."""
+    import uuid
+    doc = {
+        "todo_id":    str(uuid.uuid4()),
+        "username":   username,
+        "date":       todo_date,
+        "time":       todo_time,      # "HH:MM" or None for all-day
+        "task":       task,
+        "completed":  False,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    _todos().insert_one(doc)
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+def get_todos(username: str, todo_date: str) -> list[dict]:
+    """Return all to-do items for a given date, sorted by time (all-day first)."""
+    docs = _todos().find(
+        {"username": username, "date": todo_date},
+        {"_id": 0, "username": 0},
+        sort=[("time", 1), ("created_at", 1)],
+    )
+    return list(docs)
+
+
+def toggle_todo(username: str, todo_id: str) -> Optional[dict]:
+    """Toggle the completed state of a todo. Returns updated doc or None."""
+    doc = _todos().find_one({"username": username, "todo_id": todo_id}, {"_id": 0})
+    if not doc:
+        return None
+    new_state = not doc.get("completed", False)
+    _todos().update_one(
+        {"username": username, "todo_id": todo_id},
+        {"$set": {"completed": new_state}},
+    )
+    doc["completed"] = new_state
+    doc.pop("_id", None)
+    doc.pop("username", None)
+    return doc
+
+
+def delete_todo(username: str, todo_id: str) -> bool:
+    """Hard-delete a to-do item. Returns True if found and deleted."""
+    result = _todos().delete_one({"username": username, "todo_id": todo_id})
+    return result.deleted_count > 0
+

@@ -198,6 +198,24 @@
 
 
   <!-- ═══════════════════════════════════════════════════════
+       GREETING POPUP — shown for 2 seconds on first load
+       ═══════════════════════════════════════════════════════ -->
+  <div id="greeting-popup" aria-hidden="true" style="
+    position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.92);
+    z-index:9999;
+    background:rgba(8,11,22,0.94);backdrop-filter:blur(28px) saturate(1.6);
+    border:1px solid rgba(99,102,241,0.32);border-radius:24px;
+    padding:32px 48px;text-align:center;
+    pointer-events:none;
+    opacity:0;transition:opacity 0.45s ease,transform 0.45s cubic-bezier(0.34,1.56,0.64,1);
+    box-shadow:0 0 80px rgba(99,102,241,0.22),0 20px 60px rgba(0,0,0,0.7);
+    font-family:'Inter',sans-serif;user-select:none;">
+    <div id="greeting-popup-emoji" style="font-size:3.2rem;margin-bottom:10px;line-height:1;"></div>
+    <div id="greeting-popup-text" style="font-size:1.35rem;font-weight:800;color:#f1f5f9;letter-spacing:-0.01em;"></div>
+    <div id="greeting-popup-sub"  style="font-size:0.82rem;font-weight:400;color:#64748b;margin-top:6px;"></div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════
        TOAST
        ═══════════════════════════════════════════════════════ -->
   <div id="save-toast"></div>
@@ -206,9 +224,9 @@
   <!-- ═══════════════════════════════════════════════════════
        FRIDAY HUD OVERLAYS
        ═══════════════════════════════════════════════════════ -->
-  <!-- ── Friday Waveform Indicator (top-right HUD) ───────────────────────── -->
+  <!-- ── Friday Waveform Indicator (center-bottom HUD) ────────────────────── -->
   <div id="friday-wave-hud" aria-hidden="true" style="
-    position:fixed; top:16px; left:50%; transform:translateX(-50%);
+    position:fixed; bottom:30px; left:50%; transform:translateX(-50%);
     z-index:1000;
     display:none; align-items:center; gap:10px;
     background:rgba(8,11,22,0.82); backdrop-filter:blur(18px) saturate(1.5);
@@ -361,6 +379,79 @@
     }
 
   </script>
+
+  <!-- ── Greeting popup script ──────────────────────────────────────────── -->
+  <script>
+  (function _greetingPopup() {
+    const hour = new Date().getHours();
+    const name = (typeof Auth !== 'undefined' && Auth.username()) || 'Athlete';
+    let emoji, text, sub;
+
+    if (hour >= 4  && hour < 6)  { emoji='🌅'; text=`Early Bird, ${name}!`;      sub='You beat the sunrise 💪'; }
+    else if (hour >= 6  && hour < 9)  { emoji='☀️'; text=`Good Morning, ${name}!`;    sub="Let's crush today's workout!"; }
+    else if (hour >= 9  && hour < 12) { emoji='⚡'; text=`Morning Warrior, ${name}!`;  sub='Peak focus time — let\'s go!'; }
+    else if (hour >= 12 && hour < 14) { emoji='🔥'; text=`Midday Grinder, ${name}!`;   sub='Powering through lunch — respect!'; }
+    else if (hour >= 14 && hour < 17) { emoji='🏋️'; text=`Good Afternoon, ${name}!`;   sub='Time to lift some iron!'; }
+    else if (hour >= 17 && hour < 19) { emoji='🌇'; text=`Golden Hour, ${name}!`;       sub='Best light, best gains. Go for it!'; }
+    else if (hour >= 19 && hour < 21) { emoji='🌆'; text=`Good Evening, ${name}!`;      sub='Evening grind — pure dedication!'; }
+    else if (hour >= 21 && hour < 23) { emoji='🌙'; text=`Night Owl, ${name}!`;         sub='Burning the midnight oil 🔥'; }
+    else                               { emoji='🦉'; text=`Midnight Beast, ${name}!`;    sub='Sleep is overrated, gains are not…'; }
+
+    const popup   = document.getElementById('greeting-popup');
+    const emojiEl = document.getElementById('greeting-popup-emoji');
+    const textEl  = document.getElementById('greeting-popup-text');
+    const subEl   = document.getElementById('greeting-popup-sub');
+    if (!popup) return;
+
+    emojiEl.textContent = emoji;
+    textEl.textContent  = text;
+    subEl.textContent   = sub;
+
+    // Animate in after a short delay so page renders first
+    setTimeout(() => {
+      popup.style.opacity   = '1';
+      popup.style.transform = 'translate(-50%,-50%) scale(1)';
+    }, 350);
+
+    // Fade out after 2.5 s
+    setTimeout(() => {
+      popup.style.opacity   = '0';
+      popup.style.transform = 'translate(-50%,-50%) scale(0.94)';
+    }, 2800);
+  })();
+  </script>
+
+  <!-- ── Calorie popup → hide waveform interaction ─────────────────────── -->
+  <script>
+  (function _caloriePoupWaveformSync() {
+    window.addEventListener('load', function () {
+      const calPopup  = document.getElementById('friday-calorie-popup');
+      const waveHud   = document.getElementById('friday-wave-hud');
+      if (!calPopup || !waveHud) return;
+
+      // When calorie popup becomes visible, temporarily hide waveform
+      let _waveWasVisible = false;
+      new MutationObserver(function (mutations) {
+        const isVisible = calPopup.style.opacity === '1';
+        if (isVisible && waveHud.style.display !== 'none') {
+          _waveWasVisible = true;
+          waveHud.style.opacity   = '0';
+          waveHud.style.pointerEvents = 'none';
+        } else if (!isVisible && _waveWasVisible) {
+          _waveWasVisible = false;
+          // Wait for calorie popup fade-out (300ms) then restore waveform
+          setTimeout(() => {
+            if (waveHud.style.display !== 'none') {
+              waveHud.style.opacity   = '1';
+              waveHud.style.pointerEvents = '';
+            }
+          }, 350);
+        }
+      }).observe(calPopup, { attributes: true, attributeFilter: ['style'] });
+    });
+  })();
+  </script>
+
   <script src="/static/js/constants.js"></script>
   <script src="/static/js/session.js"></script>
   <script src="/static/js/live.js"></script>

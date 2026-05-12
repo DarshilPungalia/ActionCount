@@ -116,6 +116,7 @@ from backend.utils.validation import (
     ChatRequest, ChatResponse, ChatMessage,
     SaveWorkoutPlanRequest, WorkoutPlanResponse, WeeklyScheduleResponse,
     PlanExercise, ReplacementResponse, ReplacementSuggestion,
+    SaveToDoRequest, ToDoItem, ToDoListResponse,
 )
 from backend.agent.chatbot import _get_response
 from backend.agent.graph import invoke_friday
@@ -515,6 +516,13 @@ async def serve_plans():
 async def serve_calorie():
     """Serve the standalone Calorie Scanner page."""
     p = FRONTEND_DIR / "calorie.html"
+    return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
+
+
+@app.get("/todo", response_class=HTMLResponse)
+async def serve_todo():
+    """Serve the To-Do List page (Dashboard App)."""
+    p = FRONTEND_DIR / "todo.html"
     return HTMLResponse(content=p.read_text(encoding="utf-8") if p.exists() else "<h1>Not found</h1>")
 
 
@@ -1359,6 +1367,53 @@ async def delete_calorie_log(
     if not deleted:
         raise HTTPException(status_code=404, detail="Log entry not found")
     return {"status": "deleted", "log_id": log_id}
+
+
+
+# ── To-Do List API ────────────────────────────────────────────────────────────
+
+@app.get("/api/todos/{todo_date}", response_model=ToDoListResponse)
+async def get_todos(
+    todo_date: str,
+    username: str = Depends(_get_current_user),
+):
+    """Return all to-do items for the given date (YYYY-MM-DD)."""
+    items = db.get_todos(username, todo_date)
+    return ToDoListResponse(date=todo_date, todos=[ToDoItem(**i) for i in items])
+
+
+@app.post("/api/todos", response_model=ToDoItem, status_code=201)
+async def create_todo(
+    body: SaveToDoRequest,
+    username: str = Depends(_get_current_user),
+):
+    """Create a new to-do item."""
+    doc = db.save_todo(username, body.date, body.task, body.time)
+    return ToDoItem(**doc)
+
+
+@app.patch("/api/todos/{todo_id}/toggle", response_model=ToDoItem)
+async def toggle_todo(
+    todo_id: str,
+    username: str = Depends(_get_current_user),
+):
+    """Toggle the completed state of a to-do item."""
+    doc = db.toggle_todo(username, todo_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="To-do item not found")
+    return ToDoItem(**doc)
+
+
+@app.delete("/api/todos/{todo_id}")
+async def delete_todo(
+    todo_id: str,
+    username: str = Depends(_get_current_user),
+):
+    """Delete a to-do item."""
+    deleted = db.delete_todo(username, todo_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="To-do item not found")
+    return {"status": "deleted", "todo_id": todo_id}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="ActionCount To-Do — Plan your day hour-by-hour and stay on track." />
+  <title>ActionCount — To-Do List</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', sans-serif;
+      background: #080b16;
+      color: #e2e8f0;
+      min-height: 100vh;
+      margin: 0;
+    }
+
+    /* ── Animated background ── */
+    .bg-mesh {
+      position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
+    }
+    .bg-mesh span {
+      position: absolute; border-radius: 50%;
+      filter: blur(100px); opacity: 0.08; animation: blobDrift 18s ease-in-out infinite alternate;
+    }
+    .bg-mesh span:nth-child(1) { width:600px;height:600px;background:#6366f1;top:-100px;left:-150px; animation-duration:20s; }
+    .bg-mesh span:nth-child(2) { width:500px;height:500px;background:#8b5cf6;bottom:-100px;right:-100px; animation-duration:25s; animation-delay:-8s; }
+    .bg-mesh span:nth-child(3) { width:350px;height:350px;background:#10b981;top:40%;left:40%; animation-duration:22s; animation-delay:-5s; }
+    @keyframes blobDrift {
+      from { transform: translate(0,0) scale(1); }
+      to   { transform: translate(40px,-30px) scale(1.08); }
+    }
+
+    /* ── Nav ── */
+    .nav-pill { padding:0.4rem 0.9rem; border-radius:0.5rem; font-size:0.85rem; font-weight:500; color:#94a3b8; transition:all 0.15s; text-decoration:none; }
+    .nav-pill:hover { color:#fff; background:rgba(255,255,255,0.06); }
+    .nav-pill.active { color:#fff; background:rgba(99,102,241,0.15); border:1px solid rgba(99,102,241,0.3); }
+
+    /* ── Date navigation ── */
+    .date-nav-btn {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #94a3b8;
+      border-radius: 10px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: all 0.15s;
+      font-family: 'Inter', sans-serif;
+    }
+    .date-nav-btn:hover { background: rgba(99,102,241,0.15); color: #a5b4fc; border-color: rgba(99,102,241,0.3); }
+
+    .day-chip {
+      padding: 10px 18px;
+      border-radius: 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.03);
+      color: #64748b;
+      transition: all 0.18s;
+      text-align: center;
+    }
+    .day-chip:hover { background: rgba(99,102,241,0.1); color: #a5b4fc; border-color: rgba(99,102,241,0.2); }
+    .day-chip.selected { background: rgba(99,102,241,0.22); color: #a5b4fc; border-color: rgba(99,102,241,0.45); box-shadow: 0 0 18px rgba(99,102,241,0.15); }
+    .day-chip.today-chip { border-color: rgba(16,185,129,0.35); }
+    .day-chip.today-chip.selected { background: rgba(16,185,129,0.18); color: #34d399; border-color: rgba(16,185,129,0.45); }
+
+    /* ── Time slot sections ── */
+    .time-section {
+      margin-bottom: 24px;
+    }
+    .time-section-header {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 0.7rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: rgba(99,102,241,0.6);
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+
+    /* ── Todo item ── */
+    .todo-item {
+      display: flex; align-items: flex-start; gap: 12px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      transition: all 0.18s;
+      animation: todoSlideIn 0.3s ease both;
+    }
+    .todo-item:hover { background: rgba(255,255,255,0.055); border-color: rgba(255,255,255,0.1); }
+    .todo-item.completed { opacity: 0.45; }
+    .todo-item.completed .todo-text { text-decoration: line-through; color: #475569; }
+    @keyframes todoSlideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .todo-check {
+      width: 20px; height: 20px; flex-shrink: 0;
+      border: 2px solid rgba(99,102,241,0.4);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex; align-items: center; justify-content: center;
+      margin-top: 1px;
+    }
+    .todo-check:hover { border-color: #6366f1; background: rgba(99,102,241,0.1); }
+    .todo-check.checked { background: #6366f1; border-color: #6366f1; }
+    .todo-check.checked::after { content: '✓'; color: white; font-size: 12px; font-weight: 700; }
+
+    .todo-text {
+      flex: 1; font-size: 0.9rem; font-weight: 500; color: #e2e8f0;
+      line-height: 1.4; word-break: break-word;
+    }
+    .todo-time-badge {
+      font-size: 0.7rem; font-weight: 600;
+      color: rgba(99,102,241,0.7);
+      background: rgba(99,102,241,0.1);
+      border: 1px solid rgba(99,102,241,0.15);
+      border-radius: 6px;
+      padding: 2px 8px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .todo-delete {
+      width: 28px; height: 28px; flex-shrink: 0;
+      background: none; border: none;
+      color: rgba(100,116,139,0.5);
+      cursor: pointer; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s; font-size: 14px;
+    }
+    .todo-delete:hover { background: rgba(239,68,68,0.1); color: #f87171; }
+
+    /* ── Add Task Form ── */
+    .add-form {
+      display: flex; gap: 10px; align-items: flex-start;
+      background: rgba(10,14,26,0.7);
+      border: 1px solid rgba(99,102,241,0.2);
+      border-radius: 14px;
+      padding: 14px 16px;
+      backdrop-filter: blur(12px);
+    }
+    .add-input {
+      flex: 1;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 9px;
+      padding: 9px 14px;
+      color: #f1f5f9;
+      font-size: 0.875rem;
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .add-input:focus { border-color: rgba(99,102,241,0.5); }
+    .add-input::placeholder { color: #475569; }
+    .time-input {
+      width: 106px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 9px;
+      padding: 9px 12px;
+      color: #f1f5f9;
+      font-size: 0.875rem;
+      font-family: 'Inter', sans-serif;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .time-input:focus { border-color: rgba(99,102,241,0.5); }
+    .time-input::-webkit-calendar-picker-indicator { filter: invert(0.6); cursor: pointer; }
+    .add-btn {
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      padding: 9px 20px;
+      font-size: 0.875rem;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s, transform 0.1s;
+      font-family: 'Inter', sans-serif;
+      white-space: nowrap;
+    }
+    .add-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+    .add-btn:active { transform: scale(0.97); }
+
+    /* ── Stats bar ── */
+    .stats-bar {
+      display: flex; gap: 16px; align-items: center;
+      background: rgba(10,14,26,0.6);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 10px 18px;
+      font-size: 0.8rem; color: #64748b;
+      margin-bottom: 20px;
+    }
+    .stats-bar strong { color: #a5b4fc; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center; padding: 48px 20px; color: #475569;
+    }
+    .empty-state .empty-icon { font-size: 3rem; margin-bottom: 12px; }
+    .empty-state p { font-size: 0.9rem; }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 4px; }
+  </style>
+</head>
+<body>
+
+  <!-- Background -->
+  <div class="bg-mesh">
+    <span></span><span></span><span></span>
+  </div>
+
+  <!-- ═══════ NAV ═══════ -->
+  <nav style="position:sticky;top:0;z-index:50;background:rgba(8,11,22,0.82);backdrop-filter:blur(18px);border-bottom:1px solid rgba(255,255,255,0.06);">
+    <div style="max-width:1200px;margin:0 auto;padding:0 24px;height:56px;display:flex;align-items:center;justify-content:space-between;">
+      <a href="/" style="display:flex;align-items:center;gap:8px;text-decoration:none;">
+        <span style="font-size:1.3rem;">🏋️</span>
+        <span style="font-size:1rem;font-weight:700;color:#f1f5f9;">ActionCount</span>
+      </a>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <a href="/"          class="nav-pill">Tracker</a>
+        <a href="/dashboard" class="nav-pill">Dashboard</a>
+        <a href="/chatbot"   class="nav-pill">AI Coach</a>
+        <a href="/plans"     class="nav-pill">Plans</a>
+        <a href="/metrics"   class="nav-pill">Metrics</a>
+        <a href="/todo"      class="nav-pill active">To-Do</a>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span id="nav-username" style="font-size:0.82rem;color:#64748b;"></span>
+        <button onclick="Auth.logout()" style="background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);color:#f87171;padding:6px 14px;border-radius:8px;cursor:pointer;font-size:0.8rem;font-weight:600;font-family:'Inter',sans-serif;transition:all 0.15s;">Logout</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ═══════ MAIN ═══════ -->
+  <main style="position:relative;z-index:1;max-width:900px;margin:0 auto;padding:32px 24px;">
+
+    <!-- Header -->
+    <div style="margin-bottom:28px;">
+      <h1 style="font-size:1.75rem;font-weight:800;color:#f1f5f9;letter-spacing:-0.02em;margin:0 0 6px 0;">
+        📋 To-Do List
+      </h1>
+      <p style="color:#64748b;font-size:0.875rem;margin:0;">Plan your day, hour by hour or all at once.</p>
+    </div>
+
+    <!-- Week Date Selector -->
+    <div style="margin-bottom:20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <button class="date-nav-btn" id="btn-prev-week" onclick="shiftWeek(-1)">← Prev Week</button>
+        <span id="week-label" style="font-size:0.82rem;font-weight:600;color:#64748b;"></span>
+        <button class="date-nav-btn" id="btn-next-week" onclick="shiftWeek(1)">Next Week →</button>
+      </div>
+      <div id="day-chips" style="display:grid;grid-template-columns:repeat(7,1fr);gap:8px;"></div>
+    </div>
+
+    <!-- Stats Bar -->
+    <div class="stats-bar" id="stats-bar">
+      <span>📅 <strong id="stat-date">—</strong></span>
+      <span>·</span>
+      <span>✅ <strong id="stat-done">0</strong> done</span>
+      <span>·</span>
+      <span>⏳ <strong id="stat-pending">0</strong> pending</span>
+    </div>
+
+    <!-- Add Task Form -->
+    <div class="add-form" style="margin-bottom:24px;">
+      <input id="new-task-input" class="add-input" type="text"
+             placeholder="Add a task… (press Enter or click Add)"
+             maxlength="500" />
+      <input id="new-task-time" class="time-input" type="time"
+             title="Optional time (leave blank for all-day)" />
+      <button class="add-btn" id="add-btn" onclick="addTask()">+ Add</button>
+    </div>
+
+    <!-- Todo List Container -->
+    <div id="todo-container">
+      <!-- Populated by JS -->
+    </div>
+
+  </main>
+
+  <!-- Scripts -->
+  <script src="/static/js/api.js"></script>
+  <script>
+    /* ── Auth guard ── */
+    (function () {
+      if (!Auth.isLoggedIn()) { window.location.href = '/login?app=dashboard'; return; }
+      document.getElementById('nav-username').textContent = Auth.username();
+    })();
+  </script>
+  <script>
+  'use strict';
+
+  // ── State ────────────────────────────────────────────────────────────────────
+  let _todos       = [];
+  let _selectedDate = '';
+  let _weekOffset   = 0;  // weeks relative to current
+
+  const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // ── Date helpers ──────────────────────────────────────────────────────────────
+  function todayISO() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function toISO(d) {
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  }
+
+  function formatDisplay(iso) {
+    const [y,m,d] = iso.split('-').map(Number);
+    const dt = new Date(y, m-1, d);
+    return `${DAYS[dt.getDay()]} ${d} ${MONTHS[m-1]} ${y}`;
+  }
+
+  // ── Week grid ─────────────────────────────────────────────────────────────────
+  function buildWeekChips() {
+    const today = new Date();
+    // Start of the current week (Mon)
+    const dayOfWeek = today.getDay(); // 0=Sun
+    const diffToMon = (dayOfWeek === 0) ? -6 : 1 - dayOfWeek;
+    const monday    = new Date(today);
+    monday.setDate(today.getDate() + diffToMon + _weekOffset * 7);
+
+    const todayISO_ = todayISO();
+    const container = document.getElementById('day-chips');
+    container.innerHTML = '';
+
+    const weekStart = toISO(monday);
+    const weekEnd   = new Date(monday);
+    weekEnd.setDate(monday.getDate() + 6);
+    document.getElementById('week-label').textContent =
+      `${formatDisplay(weekStart).split(' ').slice(1).join(' ')} — ${formatDisplay(toISO(weekEnd)).split(' ').slice(1).join(' ')}`;
+
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      const iso = toISO(d);
+
+      const chip = document.createElement('div');
+      chip.className = 'day-chip' + (iso === todayISO_ ? ' today-chip' : '') + (iso === _selectedDate ? ' selected' : '');
+      chip.innerHTML = `<div style="font-size:0.7rem;font-weight:700;letter-spacing:0.06em;margin-bottom:2px;">${DAYS[d.getDay()]}</div><div style="font-size:1rem;font-weight:800;">${d.getDate()}</div>`;
+      chip.onclick = () => selectDate(iso);
+      container.appendChild(chip);
+    }
+  }
+
+  function shiftWeek(delta) {
+    _weekOffset += delta;
+    buildWeekChips();
+  }
+
+  // ── Select date & load todos ──────────────────────────────────────────────────
+  async function selectDate(iso) {
+    _selectedDate = iso;
+    buildWeekChips();
+    document.getElementById('stat-date').textContent = formatDisplay(iso);
+    await loadTodos();
+  }
+
+  async function loadTodos() {
+    try {
+      const res = await ToDo.get(_selectedDate);
+      _todos = res.todos || [];
+    } catch (e) {
+      _todos = [];
+    }
+    renderTodos();
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+  function renderTodos() {
+    const container = document.getElementById('todo-container');
+    container.innerHTML = '';
+
+    const done    = _todos.filter(t => t.completed).length;
+    const pending = _todos.length - done;
+    document.getElementById('stat-done').textContent    = done;
+    document.getElementById('stat-pending').textContent = pending;
+
+    if (_todos.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">📝</div>
+          <p>No tasks for this day yet.<br>Add one above to get started!</p>
+        </div>`;
+      return;
+    }
+
+    // Group: all-day, then hour groups
+    const allDay  = _todos.filter(t => !t.time);
+    const timed   = _todos.filter(t => t.time).sort((a,b) => a.time.localeCompare(b.time));
+
+    // ── All-day section ────────────────────────────────────────────────────
+    if (allDay.length > 0) {
+      const sec = document.createElement('div');
+      sec.className = 'time-section';
+      sec.innerHTML = `<div class="time-section-header"><span>📋</span> All Day</div>`;
+      allDay.forEach(t => sec.appendChild(makeTodoEl(t)));
+      container.appendChild(sec);
+    }
+
+    // ── Hour sections ──────────────────────────────────────────────────────
+    // Group timed todos by hour
+    const hourMap = {};
+    timed.forEach(t => {
+      const hr = t.time.slice(0,2);
+      (hourMap[hr] = hourMap[hr] || []).push(t);
+    });
+
+    Object.keys(hourMap).sort().forEach(hr => {
+      const h24   = parseInt(hr, 10);
+      const ampm  = h24 >= 12 ? 'PM' : 'AM';
+      const h12   = h24 === 0 ? 12 : h24 > 12 ? h24 - 12 : h24;
+      const label = `${h12}:00 ${ampm}`;
+      const icon  = h24 < 6  ? '🌙' : h24 < 12 ? '🌅' : h24 < 17 ? '☀️' : h24 < 21 ? '🌇' : '🌙';
+
+      const sec = document.createElement('div');
+      sec.className = 'time-section';
+      sec.innerHTML = `<div class="time-section-header"><span>${icon}</span> ${label}</div>`;
+      hourMap[hr].forEach(t => sec.appendChild(makeTodoEl(t)));
+      container.appendChild(sec);
+    });
+  }
+
+  function makeTodoEl(todo) {
+    const el = document.createElement('div');
+    el.className = 'todo-item' + (todo.completed ? ' completed' : '');
+    el.id = `todo-${todo.todo_id}`;
+
+    const timeStr = todo.time
+      ? (() => {
+          const [hh, mm] = todo.time.split(':').map(Number);
+          const ampm = hh >= 12 ? 'PM' : 'AM';
+          const h12  = hh === 0 ? 12 : hh > 12 ? hh - 12 : hh;
+          return `${h12}:${String(mm).padStart(2,'0')} ${ampm}`;
+        })()
+      : null;
+
+    el.innerHTML = `
+      <div class="todo-check ${todo.completed ? 'checked' : ''}"
+           onclick="toggleTodo('${todo.todo_id}')"
+           title="Toggle complete"></div>
+      <div class="todo-text">${escHtml(todo.task)}</div>
+      ${timeStr ? `<div class="todo-time-badge">${timeStr}</div>` : ''}
+      <button class="todo-delete" onclick="deleteTodo('${todo.todo_id}')" title="Delete">✕</button>
+    `;
+    return el;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────────────
+  async function addTask() {
+    const input   = document.getElementById('new-task-input');
+    const timeInp = document.getElementById('new-task-time');
+    const task    = input.value.trim();
+    if (!task) { input.focus(); return; }
+    const time = timeInp.value || null;
+
+    const btn = document.getElementById('add-btn');
+    btn.textContent = '…'; btn.disabled = true;
+
+    try {
+      const newTodo = await ToDo.create(_selectedDate, task, time);
+      _todos.push(newTodo);
+      input.value   = '';
+      timeInp.value = '';
+      renderTodos();
+    } catch (e) {
+      alert('Failed to add task: ' + e.message);
+    } finally {
+      btn.textContent = '+ Add'; btn.disabled = false;
+    }
+  }
+
+  async function toggleTodo(id) {
+    try {
+      const updated = await ToDo.toggle(id);
+      const idx = _todos.findIndex(t => t.todo_id === id);
+      if (idx !== -1) _todos[idx] = updated;
+      renderTodos();
+    } catch(e) { console.error(e); }
+  }
+
+  async function deleteTodo(id) {
+    const el = document.getElementById(`todo-${id}`);
+    if (el) { el.style.opacity = '0'; el.style.transform = 'scale(0.95)'; el.style.transition = 'all 0.2s'; }
+    try {
+      await ToDo.delete(id);
+      _todos = _todos.filter(t => t.todo_id !== id);
+      setTimeout(renderTodos, 200);
+    } catch(e) { if (el) { el.style.opacity=''; el.style.transform=''; } }
+  }
+
+  // ── Keyboard shortcut: Enter to add ──────────────────────────────────────────
+  document.getElementById('new-task-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addTask();
+  });
+
+  // ── Initialise ────────────────────────────────────────────────────────────────
+  (function init() {
+    selectDate(todayISO());
+  })();
+
+  </script>
+  <script src="/static/js/page_transitions.js"></script>
+</body>
+</html>

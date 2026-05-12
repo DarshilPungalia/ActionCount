@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 class SignupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
     password: str = Field(..., min_length=12, description="Minimum 12 chars, must include upper, digit and symbol")
-    email: str = Field(..., description="Required — used as the unique account identifier")
+    email: Optional[str] = Field(default=None, description="Email address — used as unique identifier")
     # 'tracker' → indefinite JWT (10 yr); 'dashboard' → 7-day JWT
     app_type: Optional[str] = Field(default="tracker", description="Which sub-app is signing up")
 
@@ -249,4 +249,42 @@ class ReplacementResponse(BaseModel):
     original_exercise: str
     muscle_group: Optional[str]
     suggestions: list[ReplacementSuggestion]
+
+
+# ── To-Do List ────────────────────────────────────────────────────────────────
+
+class SaveToDoRequest(BaseModel):
+    date: str = Field(..., description="ISO date YYYY-MM-DD")
+    task: str = Field(..., min_length=1, max_length=500)
+    time: Optional[str] = Field(
+        default=None,
+        description="HH:MM for hour-specific tasks, null/omit for all-day tasks",
+    )
+
+    @classmethod
+    def _validate_time(cls, v):
+        """Accept HH:MM or None."""
+        if v is None or v == "":
+            return None
+        import re
+        if not re.match(r'^([01]\d|2[0-3]):[0-5]\d$', v):
+            raise ValueError('time must be HH:MM (00:00–23:59) or omitted')
+        return v
+
+    def model_post_init(self, __context):
+        self.time = self._validate_time(self.time)
+
+
+class ToDoItem(BaseModel):
+    todo_id: str
+    date:    str
+    time:    Optional[str] = None
+    task:    str
+    completed: bool
+    created_at: str
+
+
+class ToDoListResponse(BaseModel):
+    date:  str
+    todos: list[ToDoItem]
 

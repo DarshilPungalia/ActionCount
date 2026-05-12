@@ -242,7 +242,7 @@ const PlanLoader = (() => {
     _bannerEl.id = 'plan-banner';
     Object.assign(_bannerEl.style, {
       position:        'fixed',
-      top:             '102px',          // ~14px clock top + ~76px clock height + 12px gap
+      top:             '152px',          // clock ~74px + 8px + weather ~52px + 8px gap
       left:            '16px',           // aligned with clock
       zIndex:          '65',
       display:         'none',

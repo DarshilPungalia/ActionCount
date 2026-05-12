@@ -29,8 +29,20 @@ async function apiFetch(path, options = {}, timeoutMs = 30000) {
     });
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;
-      try { const json = await res.json(); detail = json.detail || detail; } catch (_) {}
-      throw new Error(detail);
+      try {
+        const json = await res.json();
+        if (json.detail) {
+          // Pydantic 422 returns detail as an array of {loc, msg, type}
+          if (Array.isArray(json.detail)) {
+            detail = json.detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+          } else {
+            detail = String(json.detail);
+          }
+        }
+      } catch (_) {}
+      const err = new Error(detail);
+      err.status = res.status;
+      throw err;
     }
     return res.json();
   } catch (err) {
@@ -129,6 +141,27 @@ const Plan = {
    * Used by PlanLoader to resume mid-workout sessions.
    */
   async progress() { return apiFetch('/api/plans/today/progress'); },
+};
+
+
+const ToDo = {
+  /** Fetch all todos for a date (YYYY-MM-DD). Returns {date, todos:[...]} */
+  async get(date) { return apiFetch(`/api/todos/${encodeURIComponent(date)}`); },
+  /** Create a new todo. time is "HH:MM" or null for all-day. */
+  async create(date, task, time = null) {
+    return apiFetch('/api/todos', {
+      method: 'POST',
+      body: JSON.stringify({ date, task, time }),
+    });
+  },
+  /** Toggle completed state. Returns updated todo. */
+  async toggle(todo_id) {
+    return apiFetch(`/api/todos/${encodeURIComponent(todo_id)}/toggle`, { method: 'PATCH' });
+  },
+  /** Delete a todo by ID. */
+  async delete(todo_id) {
+    return apiFetch(`/api/todos/${encodeURIComponent(todo_id)}`, { method: 'DELETE' });
+  },
 };
 
 

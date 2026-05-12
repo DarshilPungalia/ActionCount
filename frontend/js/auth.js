@@ -160,7 +160,19 @@ document.getElementById("signupForm").addEventListener("submit", async (e) => {
     sessionStorage.setItem('ac_is_new_user', '1');   // welcome.html reads this
     showOnboarding();
   } catch (err) {
-    showError("signupError", err.message);
+    if (err.status === 409) {
+      // Duplicate username or email — guide user to log in instead
+      showError("signupError", err.message + " — ");
+      const el = document.getElementById("signupError");
+      const link = document.createElement('a');
+      link.textContent = 'Log In instead';
+      link.href = '#';
+      link.style.cssText = 'color:#a5b4fc;font-weight:700;text-decoration:underline;cursor:pointer;';
+      link.onclick = (e) => { e.preventDefault(); flipCard(); };
+      el.appendChild(link);
+    } else {
+      showError("signupError", err.message);
+    }
   } finally {
     btn.disabled = false;
     btn.textContent = "Create Account";

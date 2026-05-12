@@ -1,11 +1,10 @@
 /**
  * overlay.js — Static HUD overlays for the fullscreen tracker.
  *
- * Renders a clock (top-left) and live stats panel (top-right) as plain
- * position:fixed DOM elements — no CSS2DRenderer needed for static overlays.
+ * Renders a clock (top-left), weather widget (below clock), and live stats
+ * panel (top-right) as plain position:fixed DOM elements.
  *
  * Listens for the 'hud:stats' custom event fired by the updateHUD patch below.
- * The Angle row has been removed. A live "Volume" counter replaces it.
  */
 
 (function () {
@@ -52,6 +51,106 @@
   }
   tickClock();
   setInterval(tickClock, 1000);
+
+  // ── Weather widget — below clock (top: 96px) ──────────────────────────────
+  // Clock: top:14px + ~74px height = ~88px. Weather sits at 96px with 8px gap.
+
+  const weatherEl = document.createElement('div');
+  weatherEl.id = 'hud-weather';
+  weatherEl.style.cssText =
+    'position:fixed;top:96px;left:16px;z-index:60;' +
+    'pointer-events:none;user-select:none;' +
+    'background:rgba(10,14,26,0.55);backdrop-filter:blur(10px);' +
+    'border:1px solid rgba(255,255,255,0.07);border-radius:10px;' +
+    'padding:7px 14px;' +
+    'display:flex;align-items:center;gap:9px;' +
+    'min-width:120px;';
+
+  const weatherIconEl = document.createElement('span');
+  weatherIconEl.id = 'hud-weather-icon';
+  weatherIconEl.style.cssText = 'font-size:20px;flex-shrink:0;line-height:1;';
+  weatherIconEl.textContent = '🌡️';
+
+  const weatherInfoEl = document.createElement('div');
+  weatherInfoEl.style.cssText = 'display:flex;flex-direction:column;gap:1px;';
+
+  const weatherTempEl = document.createElement('div');
+  weatherTempEl.id = 'hud-weather-temp';
+  weatherTempEl.style.cssText =
+    'font-family:\'Inter\',sans-serif;font-size:16px;font-weight:700;' +
+    'color:rgba(255,255,255,0.90);line-height:1.1;';
+  weatherTempEl.textContent = '—°C';
+
+  const weatherDescEl = document.createElement('div');
+  weatherDescEl.id = 'hud-weather-desc';
+  weatherDescEl.style.cssText =
+    'font-family:\'Inter\',sans-serif;font-size:9px;font-weight:600;' +
+    'color:rgba(180,220,255,0.50);text-transform:uppercase;letter-spacing:0.1em;';
+  weatherDescEl.textContent = 'Locating…';
+
+  weatherInfoEl.appendChild(weatherTempEl);
+  weatherInfoEl.appendChild(weatherDescEl);
+  weatherEl.appendChild(weatherIconEl);
+  weatherEl.appendChild(weatherInfoEl);
+  document.body.appendChild(weatherEl);
+
+  // WMO weather code → emoji + label
+  const WMO = {
+    0:  { icon:'☀️',  desc:'Clear'      },
+    1:  { icon:'🌤️', desc:'Mostly Clear'},
+    2:  { icon:'⛅',  desc:'Partly Cloudy'},
+    3:  { icon:'☁️',  desc:'Overcast'   },
+    45: { icon:'🌫️', desc:'Foggy'       },
+    48: { icon:'🌫️', desc:'Icy Fog'     },
+    51: { icon:'🌦️', desc:'Lt Drizzle'  },
+    53: { icon:'🌦️', desc:'Drizzle'     },
+    55: { icon:'🌧️', desc:'Hvy Drizzle' },
+    61: { icon:'🌧️', desc:'Lt Rain'     },
+    63: { icon:'🌧️', desc:'Rain'        },
+    65: { icon:'🌧️', desc:'Heavy Rain'  },
+    71: { icon:'🌨️', desc:'Lt Snow'     },
+    73: { icon:'❄️',  desc:'Snow'        },
+    75: { icon:'❄️',  desc:'Heavy Snow'  },
+    80: { icon:'🌦️', desc:'Showers'     },
+    81: { icon:'🌧️', desc:'Showers'     },
+    82: { icon:'⛈️', desc:'Hvy Showers' },
+    95: { icon:'⛈️', desc:'Thunderstorm'},
+    99: { icon:'⛈️', desc:'Thunderstorm'},
+  };
+
+  function _applyWeather(temp, code) {
+    const entry = WMO[code] || WMO[Math.floor(code / 10) * 10] || { icon:'🌡️', desc:'Unknown' };
+    weatherIconEl.textContent  = entry.icon;
+    weatherTempEl.textContent  = Math.round(temp) + '°C';
+    weatherDescEl.textContent  = entry.desc;
+  }
+
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        const { latitude: lat, longitude: lon } = pos.coords;
+        const url = `https://api.open-meteo.com/v1/forecast` +
+          `?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}` +
+          `&current_weather=true`;
+        fetch(url)
+          .then(r => r.json())
+          .then(data => {
+            const cw = data.current_weather;
+            _applyWeather(cw.temperature, cw.weathercode);
+          })
+          .catch(() => {
+            weatherDescEl.textContent = 'Unavailable';
+          });
+      },
+      function () {
+        weatherIconEl.textContent = '📍';
+        weatherDescEl.textContent = 'Denied';
+      },
+      { timeout: 8000, maximumAge: 600000 }
+    );
+  } else {
+    weatherDescEl.textContent = 'N/A';
+  }
 
   // ── Stats panel — top-right ───────────────────────────────────────────────
 
@@ -101,7 +200,6 @@
   document.body.appendChild(statsEl);
 
   // ── Live Volume tracking ──────────────────────────────────────────────────
-  // Accumulate weight × reps each time the rep counter increments.
 
   let _sessionVolume = 0;  // kg
   let _lastRepCount  = 0;
@@ -117,7 +215,6 @@
       : '— kg';
   }
 
-  // Watch rep-count DOM node for changes
   window.addEventListener('load', function () {
     const repCountEl = document.getElementById('rep-count');
     if (!repCountEl) return;
@@ -130,12 +227,10 @@
         _lastRepCount   = count;
         updateVolumeDisplay();
       } else if (count === 0 && _lastRepCount > 0) {
-        // Reset (new set started)
         _lastRepCount = 0;
       }
     }, { childList: true, subtree: true, characterData: true });
 
-    // Reset session volume when exercise changes
     const exSelect = document.getElementById('exercise-select');
     if (exSelect) {
       exSelect.addEventListener('change', () => {
@@ -155,13 +250,11 @@
     repVal.textContent      = d.counter ?? d.count ?? 0;
     formVal.textContent     = d.feedback ?? 'Get in Position';
 
-    // Posture row — red when error active, muted when clean
     const pMsg = d.posture_msg || null;
     postureVal.textContent  = pMsg ? '\u26a0\ufe0f ' + pMsg : '\u2705 Good form';
     postureVal.style.color  = pMsg ? '#fca5a5' : 'rgba(255,255,255,0.92)';
 
     progressVal.textContent = Math.round(d.progress ?? 0) + '%';
-    // NOTE: Angle row removed per user request
   });
 
   // ── Patch updateHUD to fire hud:stats event ───────────────────────────────
