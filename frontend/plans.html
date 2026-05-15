@@ -306,13 +306,6 @@
       <div class="detail-header">
         <span class="detail-title" id="detail-day-label">Select a day</span>
         <div class="detail-actions">
-          <!-- Workout time picker -->
-          <div style="display:flex;align-items:center;gap:.45rem;" title="Set a time and the Tracker will auto-start your workout at that hour">
-            <label for="workout-time-input" style="font-size:.72rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.07em;white-space:nowrap;">⏰ Start at</label>
-            <input id="workout-time-input" type="time"
-              style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:.3rem .6rem;font-size:.8rem;color:#e2e8f0;font-family:inherit;outline:none;cursor:pointer;"
-              title="Optional: Tracker auto-starts at this time" />
-          </div>
           <button class="btn btn-ghost btn-sm" id="btn-add-exercise" onclick="toggleAddForm()">＋ Add Exercise</button>
           <button class="btn btn-danger btn-sm" id="btn-clear-day" onclick="clearDay()" style="display:none">🗑 Clear Day</button>
           <button class="btn btn-primary btn-sm" id="btn-save-plan" onclick="savePlan()" style="display:none">💾 Save Plan</button>
@@ -410,11 +403,10 @@
   };
 
   // ── State ──────────────────────────────────────────────────────────────────
-  let _schedule     = {};   // {Mon: {exercises:[...]}, ...}
-  let _scheduleTime = {};   // {Mon: 'HH:MM' | null, ...}
-  let _activeDay    = DAYS[TODAY_IDX];
-  let _dirty        = false;
-  let _sortable     = null;
+  let _schedule  = {};   // {Mon: {exercises:[...]}, ...}
+  let _activeDay = DAYS[TODAY_IDX];
+  let _dirty     = false;
+  let _sortable  = null;
   let _replaceTarget = null;  // {dayKey, exIndex}
   let _pendingPlan   = null;  // chatbot-generated plan JSON
 
@@ -433,8 +425,6 @@
       const data = await apiFetch('/api/plans/week');
       DAYS.forEach(d => {
         _schedule[d] = data[d]?.exercises || null;
-        _scheduleTime = _scheduleTime || {};
-        _scheduleTime[d] = data[d]?.workout_time || null;
       });
       refreshWeekGrid();
     } catch (e) { showToast('⚠️', 'Could not load plans: ' + e.message); }
@@ -479,9 +469,6 @@
     document.getElementById(`day-card-${day}`)?.classList.add('active-day');
     document.getElementById('detail-day-label').textContent = day + ' — Workout Plan';
     document.getElementById('add-form').classList.remove('visible');
-    // Load saved workout time for this day
-    const timeInp = document.getElementById('workout-time-input');
-    if (timeInp) timeInp.value = (_scheduleTime && _scheduleTime[day]) || '';
     renderExerciseList();
     updateDetailButtons();
   }
@@ -575,19 +562,15 @@
   async function savePlan() {
     const exs = _schedule[_activeDay];
     if (!exs || !exs.length) { clearDay(); return; }
-    const workoutTime = document.getElementById('workout-time-input')?.value || null;
     try {
       await apiFetch('/api/plans/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ weekday: _activeDay, exercises: exs, workout_time: workoutTime || null }),
+        body: JSON.stringify({ weekday: _activeDay, exercises: exs }),
       });
-      if (!_scheduleTime) _scheduleTime = {};
-      _scheduleTime[_activeDay] = workoutTime || null;
       _dirty = false;
       updateDetailButtons();
-      const timeLabel = workoutTime ? ` at ${workoutTime}` : '';
-      showToast('✅', `${_activeDay} plan saved${timeLabel}!`);
+      showToast('✅', `${_activeDay} plan saved!`);
       refreshWeekGrid();
     } catch (e) { showToast('❌', 'Save failed: ' + e.message); }
   }

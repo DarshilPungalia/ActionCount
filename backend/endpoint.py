@@ -816,13 +816,12 @@ async def get_today_plan(
     weekday = day or _DAY_NAMES[datetime.now().weekday()]
     plan = db.get_workout_plan(username, weekday)
     if not plan:
-        return {"weekday": weekday, "exercises": None, "has_plan": False, "workout_time": None}
+        return {"weekday": weekday, "exercises": None, "has_plan": False}
     return {
-        "weekday":      plan["weekday"],
-        "exercises":    plan.get("exercises", []),
-        "has_plan":     True,
-        "workout_time": plan.get("workout_time"),
-        "updated_at":   plan.get("updated_at"),
+        "weekday":   plan["weekday"],
+        "exercises": plan.get("exercises", []),
+        "has_plan":  True,
+        "updated_at": plan.get("updated_at"),
     }
 
 
@@ -900,9 +899,8 @@ async def get_week_plan(username: str = Depends(_get_current_user)):
     schedule = db.get_all_workout_plans(username)
     return {
         day: {
-            "exercises":    plan.get("exercises", []) if plan else None,
-            "has_plan":     plan is not None,
-            "workout_time": plan.get("workout_time") if plan else None,
+            "exercises": plan.get("exercises", []) if plan else None,
+            "has_plan":  plan is not None,
         }
         for day, plan in schedule.items()
     }
@@ -916,10 +914,7 @@ async def save_plan(
     """Upsert a recurring workout plan for a given weekday."""
     exercises_raw = [ex.model_dump() for ex in body.exercises]
     try:
-        saved = db.save_workout_plan(
-            username, body.weekday, exercises_raw,
-            workout_time=body.workout_time,
-        )
+        saved = db.save_workout_plan(username, body.weekday, exercises_raw)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "saved", "weekday": body.weekday, "plan": saved}

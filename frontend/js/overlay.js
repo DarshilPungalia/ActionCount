@@ -158,7 +158,7 @@
   statsEl.id = 'hud-stats';
   statsEl.style.cssText =
     'position:fixed;top:16px;right:16px;z-index:60;' +
-    'width:180px;display:none;flex-direction:column;gap:6px;' +  // hidden until workout mode
+    'width:180px;display:flex;flex-direction:column;gap:6px;' +
     'pointer-events:none;user-select:none;';
 
   function makeStatRow(label) {
@@ -270,10 +270,5 @@
       updateHUD._hudPatched = true;
     }
   });
-
-  // ── Expose showHudStats for StandbyMode ──────────────────────────────────────
-  window.showHudStats = function () {
-    statsEl.style.display = 'flex';
-  };
 
 })();

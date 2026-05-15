@@ -346,24 +346,38 @@
        ═══════════════════════════════════════════════════════ -->
   <script src="/static/js/api.js"></script>
   <script>
-    // ── Auth guard ──
-    (async function() {
+    (async function authGuard() {
       if (!Auth.isLoggedIn()) { window.location.href = '/login'; return; }
+      // Tracker App — skip /welcome entirely, land directly on the tracker.
       try {
-        await apiFetch('/api/user/profile');
+        const profile = await apiFetch('/api/user/profile');
         document.getElementById('nav-username').textContent = Auth.username();
-        // Initialize Standby Mode to check schedule before showing tracker
-        if (window.StandbyMode) StandbyMode.init();
       } catch (err) {
         if (err.message && err.message.includes('401')) {
           clearToken();
           window.location.href = '/login';
-        } else {
-          document.getElementById('nav-username').textContent = Auth.username();
-          if (window.StandbyMode) StandbyMode.init();
+          return;
         }
+        // Token valid but profile fetch had a non-auth error — stay on page
+        document.getElementById('nav-username').textContent = Auth.username();
       }
+      // Always init PlanLoader after auth succeeds (plan auto-loads if available,
+      // falls back to manual mode if not). Safe to call after scripts are parsed.
+      _initPlanLoader();
     })();
+
+    // Deferred init: if scripts haven't fully loaded yet wait for DOMContentLoaded,
+    // otherwise call immediately (auth guard is async so scripts are usually ready).
+    function _initPlanLoader() {
+      if (typeof PlanLoader !== 'undefined') {
+        PlanLoader.init();
+      } else {
+        document.addEventListener('DOMContentLoaded', () => {
+          if (typeof PlanLoader !== 'undefined') PlanLoader.init();
+        });
+      }
+    }
+
   </script>
 
   <!-- ── Greeting popup script ──────────────────────────────────────────── -->
@@ -446,8 +460,6 @@
   <script src="/static/js/tracker.js"></script>
   <script src="/static/js/rest_timer.js"></script>
   <script src="/static/js/plan_loader.js"></script>
-  <script src="/static/js/standby.js"></script>
-  <script src="/static/js/page_transitions.js"></script>
 
   <!-- Nav slide-down on hover-zone -->
   <script>
