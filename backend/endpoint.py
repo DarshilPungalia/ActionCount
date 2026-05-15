@@ -120,7 +120,14 @@ from backend.utils.validation import (
 )
 from backend.agent.chatbot import _get_response
 from backend.agent.graph import invoke_friday
-# TTS removed — see docs/tts_integration_reference.md to re-enable
+from backend.agent.tts import (
+    speak as tts_speak,
+    to_ws_envelope,
+    speaking_indicator,
+    list_voices,
+    VOICES as TTS_VOICES,
+    _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
+)
 
 from backend.agent.stt import FridaySTT
 
@@ -629,14 +636,19 @@ async def save_profile(body: UserProfile, username: str = Depends(_get_current_u
 
 @app.get("/api/voices")
 async def get_voices(_: str = Depends(_get_current_user)):
-    """TTS removed. Returns empty list. See docs/tts_integration_reference.md."""
-    return {"voices": [], "default": ""}
+    """Return available Voxtral TTS voice presets."""
+    return {"voices": list_voices(), "default": TTS_DEFAULT_VOICE}
 
 
 @app.post("/api/user/voice")
 async def set_voice(body: dict, username: str = Depends(_get_current_user)):
-    """TTS removed. Silently accepts so frontend voice picker doesn't crash."""
-    return {"status": "noop", "voice_id": "", "voice_name": ""}
+    """Persist the user's preferred TTS voice."""
+    voice_id   = (body.get("voice_id") or "").strip()
+    voice_name = next((k for k, v in TTS_VOICES.items() if v == voice_id), voice_id)
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="voice_id is required")
+    db.set_user_voice(username, voice_id)
+    return {"status": "ok", "voice_id": voice_id, "voice_name": voice_name}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1118,8 +1130,12 @@ async def ws_stream(websocket: WebSocket, session_id: str):
 
             await websocket.send_json({**payload, "skipped": False})
 
-            # TTS queue removed — posture corrections sent as friday_text
-            # See docs/tts_integration_reference.md to restore audio push.
+            # ── Drain TTS queue — push posture corrections / motivations ────
+            while not session.tts_queue.empty():
+                _kind, _text = session.tts_queue.get_nowait()
+                for _uname, _fws in list(_friday_ws_connections.items()):
+                    if _get_user_channel(_uname) == "voice":
+                        asyncio.create_task(_push_friday_tts(_fws, _uname, _text))
 
     except WebSocketDisconnect:
         pass
@@ -1174,22 +1190,31 @@ async def _handle_friday_message(
             await ws.send_json({"type": "frontend_command",
                                 "data": {"command": cmd}})
 
-        # Send response as text (TTS removed — see docs/tts_integration_reference.md)
-        if response_text:
-            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
+        # TTS audio — fires only on voice channel; text fallback for text channel
+        if response_text and channel == "voice":
+            await ws.send_json(speaking_indicator(True))
+            user_voice_id = db.get_user_voice(username) or None
+            wav = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
+            if wav:
+                await ws.send_json(to_ws_envelope(wav, response_text))
+            await ws.send_json(speaking_indicator(False))
             print(f"[FridayWS] Response cycle complete for {username!r}")
+        elif response_text:
+            await ws.send_json({"type": "friday_text", "data": {"text": response_text}})
 
     except Exception as exc:
         print(f"[FridayWS] ❌ _handle_friday_message error for {username!r}: {exc}")
 
 
 async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
-    """
-    Push posture correction / motivation text to the Friday WebSocket.
-    TTS removed — sends as friday_text. See docs/tts_integration_reference.md to restore audio.
-    """
+    """Push posture correction / motivation TTS audio to the Friday WebSocket."""
     try:
-        await ws.send_json({"type": "friday_text", "data": {"text": text}})
+        user_voice_id = db.get_user_voice(username) or None
+        await ws.send_json(speaking_indicator(True))
+        wav = await asyncio.to_thread(tts_speak, text, user_voice_id)
+        if wav:
+            await ws.send_json(to_ws_envelope(wav, text))
+        await ws.send_json(speaking_indicator(False))
     except Exception as exc:
         print(f"[FridayTTS] push error for {username!r}: {exc}")
 

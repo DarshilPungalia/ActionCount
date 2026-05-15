@@ -684,10 +684,17 @@
       _fridayWs.onmessage = function (evt) {
         try {
           const msg = JSON.parse(evt.data);
-          if (msg.type === 'calorie_result')       FridayHUD.showCaloriePopup(msg.data);
+          if (msg.type === 'calorie_result')        FridayHUD.showCaloriePopup(msg.data);
           else if (msg.type === 'frontend_command') dispatchFrontendCommand(msg.data.command);
-          // friday_text: agent response shown as text (TTS removed)
-          else if (msg.type === 'friday_text')     console.log('[Friday]', msg.data?.text);
+          else if (msg.type === 'tts_audio') {
+            // Play Voxtral WAV audio returned from the backend
+            try { new Audio('data:' + msg.data.mime + ';base64,' + msg.data.audio).play().catch(()=>{}); }
+            catch(_) {}
+          }
+          else if (msg.type === 'friday_speaking') FridayHUD.setSpeakingIndicator(msg.data.active);
+          else if (msg.type === 'friday_listening') FridayHUD.setListeningIndicator(msg.data.active);
+          // friday_text: text-channel fallback (chatbot page, TTS failure)
+          else if (msg.type === 'friday_text')      console.log('[Friday]', msg.data?.text);
         } catch(_) {}
       };
 
