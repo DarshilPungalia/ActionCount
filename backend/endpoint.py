@@ -182,6 +182,11 @@ _friday_ws_connections: dict[str, "WebSocket"] = {}
 # Current channel per username: "text" | "voice"
 _friday_channels: dict[str, str] = {}
 
+# Keyed by username — monotonic time of last posture/motivation TTS push.
+# Enforces a 5-second minimum gap between successive form-error audio clips.
+_TTS_COOLDOWN_SECS: float = 5.0
+_tts_last_spoke: dict[str, float] = {}
+
 
 def _get_user_channel(username: str) -> str:
     return _friday_channels.get(username, "text")
@@ -1126,12 +1131,29 @@ async def ws_stream(websocket: WebSocket, session_id: str):
 
             await websocket.send_json({**payload, "skipped": False})
 
-            # ── Drain TTS queue — push posture corrections / motivations ────
+            # ── Drain TTS queue — play highest-priority item only ─────────────────
+            # _check_posture() returns errors in descending priority order,
+            # and the queue may accumulate several items between frame-loop
+            # iterations. Drain the whole queue, take the FIRST (most urgent)
+            # item, discard the rest so they never play simultaneously.
+            _first_text: Optional[str] = None
             while not session.tts_queue.empty():
                 _kind, _text = session.tts_queue.get_nowait()
+                if _first_text is None:
+                    _first_text = _text   # keep highest-priority item
+                # remaining items fall through and are discarded
+
+            if _first_text is not None:
+                _now = time.monotonic()
                 for _uname, _fws in list(_friday_ws_connections.items()):
-                    if _get_user_channel(_uname) == "voice":
-                        asyncio.create_task(_push_friday_tts(_fws, _uname, _text))
+                    if _get_user_channel(_uname) != "voice":
+                        continue
+                    _last = _tts_last_spoke.get(_uname, 0.0)
+                    if _now - _last >= _TTS_COOLDOWN_SECS:
+                        _tts_last_spoke[_uname] = _now
+                        asyncio.create_task(
+                            _push_friday_tts(_fws, _uname, _first_text)
+                        )
 
     except WebSocketDisconnect:
         pass

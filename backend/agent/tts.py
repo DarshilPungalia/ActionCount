@@ -52,6 +52,9 @@ _TAG = "[FridayTTS]"
 # ── Paths ──────────────────────────────────────────────────────────────────────
 _USERPROFILE = os.environ.get("USERPROFILE", os.path.expanduser("~"))
 
+# Repo root — two levels up from this file (backend/agent/tts.py → repo root)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 VOXTRAL_BINARY: str = os.path.expandvars(os.path.expanduser(
     os.getenv(
         "VOXTRAL_BINARY",
@@ -60,12 +63,18 @@ VOXTRAL_BINARY: str = os.path.expandvars(os.path.expanduser(
 ))
 
 VOXTRAL_MODEL: str = os.path.expandvars(os.path.expanduser(
-    os.getenv("VOXTRAL_MODEL", os.path.join("models", "voxtral", "voxtral-tts-q4.gguf"))
+    os.getenv(
+        "VOXTRAL_MODEL",
+        os.path.join(_REPO_ROOT, "models", "voxtral", "voxtral-tts-q4.gguf"),
+    )
 ))
 
 # Voice embeddings directory — must be passed via --voices-dir when using --gguf
 VOXTRAL_VOICES_DIR: str = os.path.expandvars(os.path.expanduser(
-    os.getenv("VOXTRAL_VOICES_DIR", os.path.join("models", "voxtral", "voice_embedding"))
+    os.getenv(
+        "VOXTRAL_VOICES_DIR",
+        os.path.join(_REPO_ROOT, "models", "voxtral", "voice_embedding"),
+    )
 ))
 
 VOXTRAL_VOICE: str       = os.getenv("VOXTRAL_VOICE", "casual_female")
