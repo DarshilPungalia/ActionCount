@@ -128,6 +128,7 @@ from backend.agent.tts import (
     VOICES as TTS_VOICES,
     _DEFAULT_VOICE_ID as TTS_DEFAULT_VOICE,
 )
+from backend.agent.tts_cache import speak_cached, get_greeting_audio
 
 from backend.agent.stt import FridaySTT
 
@@ -1189,7 +1190,7 @@ async def _handle_friday_message(
         if response_text and channel == "voice":
             await ws.send_json(speaking_indicator(True))
             user_voice_id = db.get_user_voice(username) or None
-            wav = await asyncio.to_thread(tts_speak, response_text, user_voice_id)
+            wav = await asyncio.to_thread(speak_cached, response_text, user_voice_id)
             if wav:
                 await ws.send_json(to_ws_envelope(wav, response_text))
             await ws.send_json(speaking_indicator(False))
@@ -1206,7 +1207,7 @@ async def _push_friday_tts(ws: "WebSocket", username: str, text: str) -> None:
     try:
         user_voice_id = db.get_user_voice(username) or None
         await ws.send_json(speaking_indicator(True))
-        wav = await asyncio.to_thread(tts_speak, text, user_voice_id)
+        wav = await asyncio.to_thread(speak_cached, text, user_voice_id)
         if wav:
             await ws.send_json(to_ws_envelope(wav, text))
         await ws.send_json(speaking_indicator(False))
@@ -1271,8 +1272,20 @@ async def ws_friday(
                      "calories_today": db.get_calories_today(username)},
         })
 
-        # TTS greeting on voice channel only when user switches to voice
-        await websocket.send_json({"type": "friday_text", "data": {"text": greeting}})
+        # Greeting — voice channel: serve from cache (instant on repeat logins)
+        if _initial_channel == "voice":
+            user_voice_id = db.get_user_voice(username) or None
+            greeting_wav = await asyncio.to_thread(
+                get_greeting_audio, username, name, is_new, user_voice_id
+            )
+            if greeting_wav:
+                await websocket.send_json(speaking_indicator(True))
+                await websocket.send_json(to_ws_envelope(greeting_wav, greeting))
+                await websocket.send_json(speaking_indicator(False))
+            else:
+                await websocket.send_json({"type": "friday_text", "data": {"text": greeting}})
+        else:
+            await websocket.send_json({"type": "friday_text", "data": {"text": greeting}})
 
     except Exception as exc:
         print(f"[FridayWS] greeting error: {exc}")
