@@ -63,30 +63,47 @@ const repObserver = new MutationObserver(() => {
     _lastRepCount = reps;
   }
   updateSaveBtn(reps);
-
-  // ── Auto-save when plan target reps reached ────────────────────────────────
-  // Only fires when PlanLoader is active AND the live rep count has just hit
-  // (or exceeded) the target for the current set — saves immediately, starts
-  // the rest timer, and auto-advances to the next set after rest.
-  if (
-    !_autoSaveFired
-    && reps > 0
-    && window.PlanLoader
-    && PlanLoader.isActive()
-    && !PlanLoader.isSaved()
-  ) {
-    const item = PlanLoader.getCurrentItem();
-    if (item && item.targetReps > 0 && reps >= item.targetReps) {
-      _autoSaveFired = true;   // block re-entry until next set resets this
-      console.log(
-        `[PlanLoader] Target reached: ${reps}/${item.targetReps} reps — auto-saving set`
-      );
-      // Small delay so the rep animation completes before UI updates
-      setTimeout(() => saveSet(), 350);
-    }
-  }
 });
 if (repCountEl) repObserver.observe(repCountEl, { childList: true, subtree: true, characterData: true });
+
+// ── Auto-save hook: fires on every updateHUD call (same pattern as overlay.js) ─
+// Hooks into updateHUD AFTER DOMContentLoaded so overlay.js's patch is already in
+// place. Checks the raw counter value from the backend — no DOM/lerp race condition.
+document.addEventListener('DOMContentLoaded', () => {
+  const _origHUD = typeof updateHUD === 'function' ? updateHUD : null;
+  if (!_origHUD) return;
+
+  // Only patch once (idempotent guard)
+  if (updateHUD._autoSavePatched) return;
+
+  const _patchedHUD = function (data) {
+    _origHUD(data);
+
+    // ── Check target reps ───────────────────────────────────────────────────
+    const count = data.counter ?? data.count ?? 0;
+    if (
+      !_autoSaveFired
+      && count > 0
+      && window.PlanLoader
+      && PlanLoader.isActive()
+      && !PlanLoader.isSaved()
+    ) {
+      const item = PlanLoader.getCurrentItem();
+      if (item && item.targetReps > 0 && count >= item.targetReps) {
+        _autoSaveFired = true;
+        console.log(
+          `[PlanLoader] Target reached: ${count}/${item.targetReps} reps — auto-saving set`
+        );
+        // 350 ms: lets the rep animation complete before stop-camera fires
+        setTimeout(() => saveSet(), 350);
+      }
+    }
+  };
+  _patchedHUD._autoSavePatched = true;
+  _patchedHUD._hudPatched = updateHUD._hudPatched;  // preserve overlay.js flag
+  // eslint-disable-next-line no-global-assign
+  updateHUD = _patchedHUD;
+});
 
 function updateSaveBtn(reps) {
   if (!saveBtn) return;
